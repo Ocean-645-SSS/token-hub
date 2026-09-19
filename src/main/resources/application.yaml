@@ -1,29 +1,26 @@
 server:
-  port: 8081
+  port: ${SERVER_PORT:8080}
 spring:
   application:
-    name: hmdp
+    name: tokenhub
+  profiles:
+    default: local
   datasource:
-    driver-class-name: com.mysql.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC
-    username: root
-    password: 123
-  redis:
-    host: 192.168.150.101
-    port: 6379
-    password: 123321
-    lettuce:
-      pool:
-        max-active: 10
-        max-idle: 10
-        min-idle: 1
-        time-between-eviction-runs: 10s
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${TOKENHUB_DB_URL:jdbc:mysql://127.0.0.1:3306/tokenhub?useSSL=false&serverTimezone=UTC&characterEncoding=utf8}
+    username: ${TOKENHUB_DB_USERNAME:root}
+    password: ${TOKENHUB_DB_PASSWORD:}
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
-  type-aliases-package: com.hmdp.entity # 别名扫描包
+  configuration:
+    map-underscore-to-camel-case: true
+tokenhub:
+  jwt:
+    secret: ${TOKENHUB_JWT_SECRET:tokenhub-v1-development-secret-change-before-production-20260919}
+    access-token-ttl-seconds: ${TOKENHUB_JWT_ACCESS_TOKEN_TTL_SECONDS:7200}
 logging:
   level:
-    com.hmdp: debug
+    com.tokenhub: info
   pattern:
     dateformat: mm:ss.SSS
