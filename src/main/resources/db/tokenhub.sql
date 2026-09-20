@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS token_ledger (
 
 CREATE TABLE IF NOT EXISTS api_key (
   id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT NOT NULL, name VARCHAR(128) NOT NULL, key_prefix VARCHAR(16) NOT NULL, key_hash CHAR(64) NOT NULL,
-  status TINYINT NOT NULL DEFAULT 1, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, last_used_at DATETIME NULL,
+    allowed_models TEXT NOT NULL, status TINYINT NOT NULL DEFAULT 1, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, last_used_at DATETIME NULL,
   UNIQUE KEY uk_api_key_hash (key_hash), KEY idx_api_key_user (user_id)
 ) ENGINE=InnoDB;
 
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS model_request (
   id BIGINT PRIMARY KEY AUTO_INCREMENT, request_id VARCHAR(64) NOT NULL, user_id BIGINT NOT NULL, api_key_id BIGINT NOT NULL, model_code VARCHAR(64) NOT NULL,
   input_tokens BIGINT NULL, output_tokens BIGINT NULL, total_tokens BIGINT NULL, reserved_tokens BIGINT NOT NULL,
   status ENUM('PROCESSING','SUCCESS','FAILED','BILLING_UNKNOWN') NOT NULL, retry_count INT NOT NULL DEFAULT 0,
-  provider_cost_status ENUM('KNOWN','UNKNOWN') NOT NULL DEFAULT 'UNKNOWN', result_reference VARCHAR(255) NULL,
+  provider_cost_status ENUM('KNOWN','UNKNOWN') NOT NULL DEFAULT 'UNKNOWN', result_reference TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at DATETIME NULL,
   UNIQUE KEY uk_model_request_id (request_id), KEY idx_model_request_user (user_id)
 ) ENGINE=InnoDB;
@@ -78,3 +78,10 @@ INSERT INTO token_package (name, model_code, token_amount, price, description, s
 ('GPT-4o Mini 开发包', 'gpt-4o-mini', 1000000, 19.90, '适合日常开发与原型验证。', '代码补全,聊天机器人', 1000, 1),
 ('GPT-4o 专业包', 'gpt-4o', 500000, 49.90, '适合高质量推理与生产集成。', '复杂问答,内容生成', 500, 1)
 ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+INSERT INTO seckill_activity (package_id, seckill_price, stock, start_time, end_time, status)
+SELECT id, 9.90, 100, DATE_SUB(NOW(), INTERVAL 5 MINUTE), DATE_ADD(NOW(), INTERVAL 1 DAY), 1
+FROM token_package
+WHERE NOT EXISTS (SELECT 1 FROM seckill_activity)
+ORDER BY id
+LIMIT 1;

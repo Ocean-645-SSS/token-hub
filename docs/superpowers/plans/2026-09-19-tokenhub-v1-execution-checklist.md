@@ -66,12 +66,12 @@
 
 **完成任务**
 
-- [ ] 定义普通下单、支付、取消、订单详情的请求/响应 DTO 与错误语义；下单只允许可售套餐。
-- [ ] 在一个 MySQL 事务中以条件更新扣减 `token_package.stock` 并创建 `WAIT_PAY` 的 `NORMAL` 订单；库存不足或并发失败必须整体回滚。
-- [ ] 实现用户取消：仅 `101 → 102` 成功时，在同一事务创建 `NORMAL_ORDER_STOCK_RELEASE(orderNo)` 的 `local_message`。
-- [ ] 实现模拟支付：仅 `101 → 201` 成功时，在同一事务创建 Token 发放事件；支付不得直接修改钱包或写入到账流水。
-- [ ] 实现 Token 发放处理器：`201 → 301 → 302 → 401`，按 `(user_id, model_code)` 更新钱包并以 `TOKEN_GRANT_ORDER_<orderNo>` 写唯一账本；重复投递不可重复加额。
-- [ ] 实现 `GET /api/orders/{id}`、`GET /api/wallet`、`GET /api/wallet/ledger`，确保仅能查看本人数据。
+- [x] 定义普通下单、支付、取消、订单详情的请求/响应 DTO 与错误语义；下单只允许可售套餐。
+- [x] 在一个 MySQL 事务中以条件更新扣减 `token_package.stock` 并创建 `WAIT_PAY` 的 `NORMAL` 订单；库存不足或并发失败必须整体回滚。
+- [x] 实现用户取消：仅 `101 → 102` 成功时，在同一事务创建 `NORMAL_ORDER_STOCK_RELEASE(orderNo)` 的 `local_message`。
+- [x] 实现模拟支付：仅 `101 → 201` 成功时，在同一事务创建 Token 发放事件；支付不得直接修改钱包或写入到账流水。
+- [x] 实现 Token 发放处理器：`201 → 301 → 302 → 401`，按 `(user_id, model_code)` 更新钱包并以 `TOKEN_GRANT_ORDER_<orderNo>` 写唯一账本；重复投递不可重复加额。
+- [x] 实现 `GET /api/orders/{id}`、`GET /api/wallet`、`GET /api/wallet/ledger`，确保仅能查看本人数据。
 
 **进入条件**
 
@@ -93,12 +93,12 @@
 
 **完成任务**
 
-- [ ] 实现秒杀活动管理所需的最小初始化数据与活动状态校验；活动库存从普通库存独立划出，两个库存字段不复用。
-- [ ] 实现活动预热：写入 `seckill:activity:{id}`、`seckill:stock:{id}`；活动期间核心 Key 无自然过期，结束后由业务清理。
-- [ ] 编写秒杀 Lua：原子校验活动时间/状态、Redis 库存与 `seckill:users:{id}`；通过后扣一份活动库存、写参与记录和 `seckill:reservation:{requestId}=PENDING`。
-- [ ] 实现 `POST /api/seckill/{activityId}` 立即返回 `requestId` 与 `QUEUING`，以及结果查询接口返回 `QUEUING`、`SUCCESS:orderNo` 或 `FAILED`。
-- [ ] 定义并实现 `reserveSeckillStock()` 与状态 `STOCK_RESERVED`；严禁借用 Token 额度冻结名称或实现。
-- [ ] Redis 不可用时秒杀快速失败，不允许降级为直接写 MySQL。
+- [x] 实现秒杀活动管理所需的最小初始化数据与活动状态校验；活动库存从普通库存独立划出，两个库存字段不复用。
+- [x] 实现活动预热：写入 `seckill:activity:{id}`、`seckill:stock:{id}`；活动期间核心 Key 无自然过期，结束后由业务清理。
+- [x] 编写秒杀 Lua：原子校验活动时间/状态、Redis 库存与 `seckill:users:{id}`；通过后扣一份活动库存、写参与记录和 `seckill:reservation:{requestId}=PENDING`。
+- [x] 实现 `POST /api/seckill/{activityId}` 立即返回 `requestId` 与 `QUEUING`，以及结果查询接口返回 `QUEUING`、`SUCCESS:orderNo` 或 `FAILED`。
+- [x] 定义并实现 `reserveSeckillStock()` 与状态 `STOCK_RESERVED`；严禁借用 Token 额度冻结名称或实现。
+- [x] Redis 不可用时秒杀快速失败，不允许降级为直接写 MySQL。
 
 **进入条件**
 
@@ -120,12 +120,12 @@
 
 **完成任务**
 
-- [ ] 在决定 exchange、routing key、绑定、确认与失败策略后，声明 `seckill.order.queue`、`token.grant.queue` 和为延迟取消预留的队列拓扑；将决定写入配置/文档。
-- [ ] 从 Lua 预占到发送秒杀消息时推进 `PENDING → SENT`；消息包含 `requestId, userId, activityId, packageId`。
-- [ ] 秒杀消费者仅在预占仍为 `PENDING/SENT` 时，幂等创建 `WAIT_PAY` 的 `SECKILL` 订单；成功后推进至 `ORDER_CREATED` 并写 `SUCCESS:orderNo`，失败写 `FAILED`。
-- [ ] 以 `orders(request_id)`、`orders(user_id, seckill_activity_id)` 及预占状态共同防重；消费者不得在获得资格时写 Token Ledger。
-- [ ] 将阶段 1 的 Token 发放改由 `token.grant.queue` 消费，保留一次且仅一次到账语义。
-- [ ] 实现 `local_message` 轮询/重试：事务内保存事件，提交后发送；发送失败或消费侧故障可恢复，且记录重试次数与下次时间。
+- [x] 在决定 exchange、routing key、绑定、确认与失败策略后，声明 `seckill.order.queue`、`token.grant.queue` 和为延迟取消预留的队列拓扑；将决定写入配置/文档。
+- [x] 从 Lua 预占到发送秒杀消息时推进 `PENDING → SENT`；消息包含 `requestId, userId, activityId, packageId`。
+- [x] 秒杀消费者仅在预占仍为 `PENDING/SENT` 时，幂等创建 `WAIT_PAY` 的 `SECKILL` 订单；成功后推进至 `ORDER_CREATED` 并写 `SUCCESS:orderNo`，失败写 `FAILED`。
+- [x] 以 `orders(request_id)`、`orders(user_id, seckill_activity_id)` 及预占状态共同防重；消费者不得在获得资格时写 Token Ledger。
+- [x] 将阶段 1 的 Token 发放改由 `token.grant.queue` 消费，保留一次且仅一次到账语义。
+- [x] 实现 `local_message` 轮询/重试：事务内保存事件，提交后发送；发送失败或消费侧故障可恢复，且记录重试次数与下次时间。
 
 **进入条件**
 
@@ -147,12 +147,12 @@
 
 **完成任务**
 
-- [ ] 按已确定的 RabbitMQ TTL + DLX 拓扑实现 15 分钟支付超时检查；只允许 `WAIT_PAY(101) → TIMEOUT_CANCELLED(103)`。
-- [ ] 为普通订单写入 `NORMAL_ORDER_STOCK_RELEASE(orderNo)`，事件处理器幂等回补 MySQL 普通库存。
-- [ ] 为秒杀订单写入 `SECKILL_STOCK_RELEASE(orderNo)`，处理器通过 Lua 和 `release:{orderNo}` 标记幂等回补 Redis 秒杀库存，但不删除活动参与记录。
-- [ ] 支付、用户取消、超时取消全部采用条件更新；已支付订单的延迟消息不得取消订单或回补库存。
-- [ ] 建立 `token_package_index`，字段仅为 `id,name,modelCode,tokenAmount,price,description,scenarios`；实现套餐变更的索引同步策略。
-- [ ] 实现关键词全文搜索、模型精确过滤、价格范围和 Token 数量范围；仍保留 MySQL 详情为事实源。
+- [x] 按已确定的 RabbitMQ TTL + DLX 拓扑实现 15 分钟支付超时检查；只允许 `WAIT_PAY(101) → TIMEOUT_CANCELLED(103)`。
+- [x] 为普通订单写入 `NORMAL_ORDER_STOCK_RELEASE(orderNo)`，事件处理器幂等回补 MySQL 普通库存。
+- [x] 为秒杀订单写入 `SECKILL_STOCK_RELEASE(orderNo)`，处理器通过 Lua 和 `release:{orderNo}` 标记幂等回补 Redis 秒杀库存，但不删除活动参与记录。
+- [x] 支付、用户取消、超时取消全部采用条件更新；已支付订单的延迟消息不得取消订单或回补库存。
+- [x] 建立 `token_package_index`，字段仅为 `id,name,modelCode,tokenAmount,price,description,scenarios`；实现套餐变更的索引同步策略。
+- [x] 实现关键词全文搜索、模型精确过滤、价格范围和 Token 数量范围；仍保留 MySQL 详情为事实源。
 
 **进入条件**
 
@@ -174,14 +174,14 @@
 
 **完成任务**
 
-- [ ] 实现 API Key 创建、列表、吊销：只保存 `key_prefix` 与 SHA-256 `key_hash`，完整 Key 仅在创建响应中出现一次；实现 `apikey:{hash}` 鉴权缓存。
-- [ ] 为 Key 配置允许的 `model_code` 列表，并实现 API Key 固定 QPS 限流；返回定义的业务错误，不能透传上游 HTTP 错误。
-- [ ] 定义单一 `ModelProvider` 接口并接入一个 OpenAI-Compatible Provider；不接多 Provider、不支持 SSE。
-- [ ] 实现 `/v1/chat/completions`：校验 Bearer Key、`Idempotency-Key`、模型权限、输入/输出限制，并维护 `model_request` 的 `PROCESSING/SUCCESS/FAILED/BILLING_UNKNOWN`。
-- [ ] 用 Redis Lua 计算 `estimatedInputTokens + maxOutputTokens + safetyMargin`，原子检查可用额度与 `credit_limit=5000` 并冻结；使用 `token:reservation:{requestId}` 记录 `FROZEN`。
-- [ ] 对成功且有真实 `usage.total_tokens` 的请求结算：按真实用量扣减、释放其余冻结、写唯一 `CONSUME` Ledger、标记 `SETTLED/SUCCESS`；真实用量超过冻结时允许到 `-5000`，再超过仍记录真实消费并将账户置为 `SUSPENDED`。
-- [ ] 仅对网络错误、连接/读取超时与 `429/502/503/504` 重试，最多三次，退避 200ms、500ms；所有其他错误不重试。
-- [ ] 最终失败释放冻结并标记 `FAILED`；上游成功但没有 usage 时标记 `BILLING_UNKNOWN`、成本 `UNKNOWN`、释放冻结且不扣用户；实现超时 `FROZEN` 预占的定时释放。
+- [x] 实现 API Key 创建、列表、吊销：只保存 `key_prefix` 与 SHA-256 `key_hash`，完整 Key 仅在创建响应中出现一次；实现 `apikey:{hash}` 鉴权缓存。
+- [x] 为 Key 配置允许的 `model_code` 列表，并实现 API Key 固定 QPS 限流；返回定义的业务错误，不能透传上游 HTTP 错误。
+- [x] 定义单一 `ModelProvider` 接口并接入一个 OpenAI-Compatible Provider；不接多 Provider、不支持 SSE。
+- [x] 实现 `/v1/chat/completions`：校验 Bearer Key、`Idempotency-Key`、模型权限、输入/输出限制，并维护 `model_request` 的 `PROCESSING/SUCCESS/FAILED/BILLING_UNKNOWN`。
+- [x] 用 Redis Lua 计算 `estimatedInputTokens + maxOutputTokens + safetyMargin`，原子检查可用额度与 `credit_limit=5000` 并冻结；使用 `token:reservation:{requestId}` 记录 `FROZEN`。
+- [x] 对成功且有真实 `usage.total_tokens` 的请求结算：按真实用量扣减、释放其余冻结、写唯一 `CONSUME` Ledger、标记 `SETTLED/SUCCESS`；真实用量超过冻结时允许到 `-5000`，再超过仍记录真实消费并将账户置为 `SUSPENDED`。
+- [x] 仅对网络错误、连接/读取超时与 `429/502/503/504` 重试，最多三次，退避 200ms、500ms；所有其他错误不重试。
+- [x] 最终失败释放冻结并标记 `FAILED`；上游成功但没有 usage 时标记 `BILLING_UNKNOWN`、成本 `UNKNOWN`、释放冻结且不扣用户；实现超时 `FROZEN` 预占的定时释放。
 
 **进入条件**
 
@@ -204,11 +204,11 @@
 
 **完成任务**
 
-- [ ] 实现 `POST /ai/recommend`：提取用途、预算、用量，调用 `searchPackages(...)` 获取 ES 候选，再调用 `estimateTokenUsage(...)` 和 LLM 生成基于候选的推荐理由。
-- [ ] 限制 LLM 的输入只包含用户需求与 ES 候选；不得新增 Agent、向量库、额外知识库或复杂推荐算法。
-- [ ] 编写 JMeter 场景：普通购买、秒杀资格预占/异步下单、模型计费（以 Provider mock 或受控环境执行）。
-- [ ] 记录实际运行环境、数据量、并发、吞吐、p95/p99（如采集）、错误率、数据库写入量和观察窗口；对比直接 MySQL 与 Redis + Lua + MQ，但不把设想的 5k/1w 并发或 10 万请求写成已验证结论。
-- [ ] 更新 `README.md`：架构图、启动步骤、依赖服务、数据初始化、接口示例、五条链路、状态机、压测方法/原始结果、已知限制和未实现范围。
+- [x] 实现 `POST /ai/recommend`：提取用途、预算、用量，调用 `searchPackages(...)` 获取 ES 候选，再调用 `estimateTokenUsage(...)` 和 LLM 生成基于候选的推荐理由。
+- [x] 限制 LLM 的输入只包含用户需求与 ES 候选；不得新增 Agent、向量库、额外知识库或复杂推荐算法。
+- [x] 编写 JMeter 场景：普通购买、秒杀资格预占/异步下单、模型计费（以 Provider mock 或受控环境执行）。
+- [x] 记录实际运行环境、数据量、并发、吞吐、p95/p99（如采集）、错误率、数据库写入量和观察窗口；对比直接 MySQL 与 Redis + Lua + MQ，但不把设想的 5k/1w 并发或 10 万请求写成已验证结论。
+- [x] 更新 `README.md`：架构图、启动步骤、依赖服务、数据初始化、接口示例、五条链路、状态机、压测方法/原始结果、已知限制和未实现范围。
 
 **进入条件**
 
@@ -216,8 +216,8 @@
 
 **验收**
 
-- [ ] 导购只从 ES 返回候选中推荐；推荐同时说明用途、预算/用量假设与套餐理由，检索无候选时给出明确无匹配结果。
-- [ ] `searchPackages(...)` 和 `estimateTokenUsage(...)` 各有独立、可复现的测试输入输出；导购链路不依赖未列入 V1 的基础设施。
+- [x] 导购只从 ES 返回候选中推荐；推荐同时说明用途、预算/用量假设与套餐理由，检索无候选时给出明确无匹配结果。
+- [x] `searchPackages(...)` 和 `estimateTokenUsage(...)` 各有独立、可复现的测试输入输出；导购链路不依赖未列入 V1 的基础设施。
 - [ ] JMeter 脚本可复跑，报告包含真实环境和指标；异常、失败或无法达到目标的结果如实保留。
 - [ ] README 可使新开发者从空环境启动依赖、初始化数据、执行核心演示和定位测试/压测入口。
 

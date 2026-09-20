@@ -10,12 +10,42 @@ spring:
     url: ${TOKENHUB_DB_URL:jdbc:mysql://127.0.0.1:3306/tokenhub?useSSL=false&serverTimezone=UTC&characterEncoding=utf8}
     username: ${TOKENHUB_DB_USERNAME:root}
     password: ${TOKENHUB_DB_PASSWORD:}
+  data:
+    redis:
+      host: ${TOKENHUB_REDIS_HOST:127.0.0.1}
+      port: ${TOKENHUB_REDIS_PORT:6379}
+      timeout: ${TOKENHUB_REDIS_TIMEOUT:2s}
+  rabbitmq:
+    host: ${TOKENHUB_RABBITMQ_HOST:127.0.0.1}
+    port: ${TOKENHUB_RABBITMQ_PORT:5672}
+    username: ${TOKENHUB_RABBITMQ_USERNAME:guest}
+    password: ${TOKENHUB_RABBITMQ_PASSWORD:guest}
+    publisher-confirm-type: correlated
+    publisher-returns: true
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 tokenhub:
+  billing:
+    credit-limit: ${TOKENHUB_BILLING_CREDIT_LIMIT:5000}
+    safety-margin: ${TOKENHUB_BILLING_SAFETY_MARGIN:512}
+    reservation-timeout-seconds: ${TOKENHUB_BILLING_RESERVATION_TIMEOUT_SECONDS:300}
+  model:
+    base-url: ${TOKENHUB_MODEL_BASE_URL:http://127.0.0.1:18080}
+    api-key: ${TOKENHUB_MODEL_API_KEY:}
+    max-input-characters: ${TOKENHUB_MODEL_MAX_INPUT_CHARACTERS:32000}
+    max-output-tokens: ${TOKENHUB_MODEL_MAX_OUTPUT_TOKENS:4096}
+    connect-timeout-ms: ${TOKENHUB_MODEL_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${TOKENHUB_MODEL_READ_TIMEOUT_MS:30000}
+    max-attempts: ${TOKENHUB_MODEL_MAX_ATTEMPTS:3}
+  rate-limit:
+    api-key-qps: ${TOKENHUB_RATE_LIMIT_API_KEY_QPS:5}
+  elasticsearch:
+    url: ${TOKENHUB_ES_URL:http://127.0.0.1:9200}
+  messaging:
+    retry-delay-ms: ${TOKENHUB_MESSAGE_RETRY_DELAY_MS:5000}
   jwt:
     secret: ${TOKENHUB_JWT_SECRET:tokenhub-v1-development-secret-change-before-production-20260919}
     access-token-ttl-seconds: ${TOKENHUB_JWT_ACCESS_TOKEN_TTL_SECONDS:7200}

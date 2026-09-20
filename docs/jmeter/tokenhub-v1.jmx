@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="TokenHub V1 scenarios" enabled="true">
+      <stringProp name="TestPlan.comments">Run one named thread group at a time. The model scenario requires TOKENHUB_TEST_API_KEY and a controlled OpenAI-compatible mock.</stringProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="host" elementType="Argument"><stringProp name="Argument.name">host</stringProp><stringProp name="Argument.value">${__P(host,127.0.0.1)}</stringProp></elementProp>
+          <elementProp name="port" elementType="Argument"><stringProp name="Argument.name">port</stringProp><stringProp name="Argument.value">${__P(port,8080)}</stringProp></elementProp>
+          <elementProp name="threads" elementType="Argument"><stringProp name="Argument.name">threads</stringProp><stringProp name="Argument.value">${__P(threads,10)}</stringProp></elementProp>
+          <elementProp name="loops" elementType="Argument"><stringProp name="Argument.name">loops</stringProp><stringProp name="Argument.value">${__P(loops,1)}</stringProp></elementProp>
+          <elementProp name="apiKey" elementType="Argument"><stringProp name="Argument.name">apiKey</stringProp><stringProp name="Argument.value">REPLACE_WITH_TEST_API_KEY</stringProp></elementProp>
+          <elementProp name="packageId" elementType="Argument"><stringProp name="Argument.name">packageId</stringProp><stringProp name="Argument.value">1</stringProp></elementProp>
+          <elementProp name="activityId" elementType="Argument"><stringProp name="Argument.name">activityId</stringProp><stringProp name="Argument.value">1</stringProp></elementProp>
+        </collectionProp>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP defaults" enabled="true"><stringProp name="HTTPSampler.domain">${host}</stringProp><stringProp name="HTTPSampler.port">${port}</stringProp><stringProp name="HTTPSampler.protocol">http</stringProp></ConfigTestElement>
+      <hashTree/>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="normal-purchase" enabled="true"><stringProp name="ThreadGroup.num_threads">${threads}</stringProp><stringProp name="ThreadGroup.ramp_time">5</stringProp><boolProp name="ThreadGroup.scheduler">false</boolProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController"><stringProp name="LoopController.loops">${loops}</stringProp><boolProp name="LoopController.continue_forever">false</boolProp></elementProp></ThreadGroup>
+      <hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="JWT JSON headers" enabled="true"><collectionProp name="HeaderManager.headers"><elementProp name="Authorization" elementType="Header"><stringProp name="Header.name">Authorization</stringProp><stringProp name="Header.value">Bearer ${__P(jwt,REPLACE_WITH_LOGIN_TOKEN)}</stringProp></elementProp><elementProp name="Content-Type" elementType="Header"><stringProp name="Header.name">Content-Type</stringProp><stringProp name="Header.value">application/json</stringProp></elementProp></collectionProp></HeaderManager>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="create normal order" enabled="true"><stringProp name="HTTPSampler.path">/api/orders</stringProp><stringProp name="HTTPSampler.method">POST</stringProp><boolProp name="HTTPSampler.postBodyRaw">true</boolProp><elementProp name="HTTPsampler.Arguments" elementType="Arguments"><collectionProp name="Arguments.arguments"><elementProp name="" elementType="HTTPArgument"><stringProp name="Argument.value">{&quot;packageId&quot;:${packageId}}</stringProp><stringProp name="HTTPArgument.always_encode">false</stringProp></elementProp></collectionProp></elementProp></HTTPSamplerProxy>
+        <hashTree><JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="extract order id" enabled="true"><stringProp name="JSONPostProcessor.referenceNames">orderId</stringProp><stringProp name="JSONPostProcessor.jsonPathExprs">$.data.id</stringProp></JSONPostProcessor></hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="pay normal order" enabled="true"><stringProp name="HTTPSampler.path">/api/orders/${orderId}/pay</stringProp><stringProp name="HTTPSampler.method">POST</stringProp></HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="seckill-reserve-and-poll" enabled="false"><stringProp name="ThreadGroup.num_threads">${threads}</stringProp><stringProp name="ThreadGroup.ramp_time">5</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController"><stringProp name="LoopController.loops">${loops}</stringProp></elementProp></ThreadGroup>
+      <hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="JWT header" enabled="true"><collectionProp name="HeaderManager.headers"><elementProp name="Authorization" elementType="Header"><stringProp name="Header.name">Authorization</stringProp><stringProp name="Header.value">Bearer ${jwt}</stringProp></elementProp></collectionProp></HeaderManager><hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="reserve seckill stock" enabled="true"><stringProp name="HTTPSampler.path">/api/seckill/${activityId}</stringProp><stringProp name="HTTPSampler.method">POST</stringProp></HTTPSamplerProxy>
+        <hashTree><JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="extract request id" enabled="true"><stringProp name="JSONPostProcessor.referenceNames">requestId</stringProp><stringProp name="JSONPostProcessor.jsonPathExprs">$.data.requestId</stringProp></JSONPostProcessor></hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="poll async seckill result" enabled="true"><stringProp name="HTTPSampler.path">/api/seckill/result/${requestId}</stringProp><stringProp name="HTTPSampler.method">GET</stringProp></HTTPSamplerProxy><hashTree/>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="model-billing-mock" enabled="false"><stringProp name="ThreadGroup.num_threads">${threads}</stringProp><stringProp name="ThreadGroup.ramp_time">5</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController"><stringProp name="LoopController.loops">${loops}</stringProp></elementProp></ThreadGroup>
+      <hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="API Key JSON headers" enabled="true"><collectionProp name="HeaderManager.headers"><elementProp name="Authorization" elementType="Header"><stringProp name="Header.name">Authorization</stringProp><stringProp name="Header.value">Bearer ${apiKey}</stringProp></elementProp><elementProp name="Idempotency-Key" elementType="Header"><stringProp name="Header.name">Idempotency-Key</stringProp><stringProp name="Header.value">jmeter-${__UUID()}</stringProp></elementProp><elementProp name="Content-Type" elementType="Header"><stringProp name="Header.name">Content-Type</stringProp><stringProp name="Header.value">application/json</stringProp></elementProp></collectionProp></HeaderManager><hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="chat completion through controlled provider mock" enabled="true"><stringProp name="HTTPSampler.path">/v1/chat/completions</stringProp><stringProp name="HTTPSampler.method">POST</stringProp><boolProp name="HTTPSampler.postBodyRaw">true</boolProp><elementProp name="HTTPsampler.Arguments" elementType="Arguments"><collectionProp name="Arguments.arguments"><elementProp name="" elementType="HTTPArgument"><stringProp name="Argument.value">{&quot;model&quot;:&quot;gpt-4o-mini&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;JMeter billing check&quot;}],&quot;max_tokens&quot;:32}</stringProp><stringProp name="HTTPArgument.always_encode">false</stringProp></elementProp></collectionProp></elementProp></HTTPSamplerProxy><hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
