@@ -1,6 +1,8 @@
 server:
   port: ${SERVER_PORT:8080}
 spring:
+  config:
+    import: optional:file:.env[.properties]
   application:
     name: tokenhub
   profiles:
@@ -35,6 +37,7 @@ tokenhub:
   model:
     base-url: ${TOKENHUB_MODEL_BASE_URL:http://127.0.0.1:18080}
     api-key: ${TOKENHUB_MODEL_API_KEY:}
+    guide-model: ${TOKENHUB_MODEL_GUIDE_MODEL:gpt-4o-mini}
     max-input-characters: ${TOKENHUB_MODEL_MAX_INPUT_CHARACTERS:32000}
     max-output-tokens: ${TOKENHUB_MODEL_MAX_OUTPUT_TOKENS:4096}
     connect-timeout-ms: ${TOKENHUB_MODEL_CONNECT_TIMEOUT_MS:3000}

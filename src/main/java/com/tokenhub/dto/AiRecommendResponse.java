@@ -7,5 +7,6 @@ public record AiRecommendResponse(
         String purpose,
         long estimatedMonthlyTokens,
         String usageAssumption,
+        PackageSearchCriteria criteria,
         List<TokenPackage> candidates,
         String recommendation) { }
