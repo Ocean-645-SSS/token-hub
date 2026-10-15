@@ -2,6 +2,7 @@ package com.tokenhub.service;
 
 import com.tokenhub.common.BusinessException;
 import com.tokenhub.entity.SeckillActivity;
+import com.tokenhub.mapper.LocalMessageMapper;
 import com.tokenhub.mapper.SeckillActivityMapper;
 import com.tokenhub.security.CurrentUser;
 import org.junit.jupiter.api.AfterEach;
@@ -43,6 +44,24 @@ class SeckillServiceTest {
         CurrentUser.set(8L); when(redis.execute(any(), anyList(), any(), any(), any())).thenThrow(new RuntimeException("redis down"));
         assertEquals("SECKILL_UNAVAILABLE", assertThrows(BusinessException.class, () -> service.reserve(15L)).code());
         verifyNoInteractions(activities);
+    }
+
+    @Test void outboxInsertFailureImmediatelyCompensatesReservedRedisStock() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class, RETURNS_DEEP_STUBS);
+        LocalMessageMapper messages = mock(LocalMessageMapper.class);
+        SeckillService service = new SeckillService(redis, activities, messages, new com.fasterxml.jackson.databind.ObjectMapper());
+        CurrentUser.set(8L);
+        when(redis.execute(any(), anyList(), any(), any(), any())).thenReturn(0L);
+        when(redis.opsForHash().get(anyString(), eq("packageId"))).thenReturn("23");
+        when(messages.insert(any())).thenReturn(0);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.reserve(15L));
+
+        assertEquals("SECKILL_UNAVAILABLE", error.code());
+        verify(redis).execute(any(), org.mockito.ArgumentMatchers.<java.util.List<String>>argThat(keys -> keys.size() == 3
+                && keys.get(0).startsWith("seckill:reservation:")
+                && keys.get(1).equals("seckill:stock:15")
+                && keys.get(2).startsWith("seckill:release:")));
     }
 
     @Test void preheatRejectsInvalidActivityBeforeWritingRedis() {

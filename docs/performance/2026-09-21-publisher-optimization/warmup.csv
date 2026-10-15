@@ -1,0 +1,2 @@
+timestamp,concurrency,total,accepted,failed,qps,avg_ms,p50_ms,p95_ms,p99_ms,max_ms,error_rate_pct
+2026-09-21T02:26:33.428495400Z,10,601,601,0,119.66,83.267,55.577,145.382,1093.410,1108.092,0.0000

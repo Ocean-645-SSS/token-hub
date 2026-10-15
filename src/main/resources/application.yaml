@@ -24,12 +24,20 @@ spring:
     password: ${TOKENHUB_RABBITMQ_PASSWORD:guest}
     publisher-confirm-type: correlated
     publisher-returns: true
+    template:
+      mandatory: true
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 tokenhub:
+  admin:
+    user-ids: ${TOKENHUB_ADMIN_USER_IDS:}
+  package-index-sync:
+    max-attempts: ${TOKENHUB_PACKAGE_INDEX_MAX_ATTEMPTS:3}
+    retry-backoff-ms: ${TOKENHUB_PACKAGE_INDEX_RETRY_BACKOFF_MS:200}
+    reconciliation-interval-ms: ${TOKENHUB_PACKAGE_INDEX_RECONCILIATION_INTERVAL_MS:60000}
   billing:
     credit-limit: ${TOKENHUB_BILLING_CREDIT_LIMIT:5000}
     safety-margin: ${TOKENHUB_BILLING_SAFETY_MARGIN:512}
@@ -48,7 +56,19 @@ tokenhub:
   elasticsearch:
     url: ${TOKENHUB_ES_URL:http://127.0.0.1:9200}
   messaging:
-    retry-delay-ms: ${TOKENHUB_MESSAGE_RETRY_DELAY_MS:5000}
+    poll-interval-ms: ${TOKENHUB_MESSAGE_POLL_INTERVAL_MS:200}
+    batch-size: ${TOKENHUB_MESSAGE_BATCH_SIZE:500}
+    max-in-flight: ${TOKENHUB_MESSAGE_MAX_IN_FLIGHT:1000}
+    claim-timeout-seconds: ${TOKENHUB_MESSAGE_CLAIM_TIMEOUT_SECONDS:30}
+    retry-delay-seconds: ${TOKENHUB_MESSAGE_RETRY_DELAY_SECONDS:5}
+    publisher-core-threads: ${TOKENHUB_PUBLISHER_CORE_THREADS:4}
+    publisher-max-threads: ${TOKENHUB_PUBLISHER_MAX_THREADS:8}
+    publisher-queue-capacity: ${TOKENHUB_PUBLISHER_QUEUE_CAPACITY:500}
+  rabbit:
+    consumer:
+      concurrency: ${TOKENHUB_RABBIT_CONSUMER_CONCURRENCY:4}
+      max-concurrency: ${TOKENHUB_RABBIT_CONSUMER_MAX_CONCURRENCY:8}
+      prefetch: ${TOKENHUB_RABBIT_CONSUMER_PREFETCH:32}
   jwt:
     secret: ${TOKENHUB_JWT_SECRET:tokenhub-v1-development-secret-change-before-production-20260919}
     access-token-ttl-seconds: ${TOKENHUB_JWT_ACCESS_TOKEN_TTL_SECONDS:7200}

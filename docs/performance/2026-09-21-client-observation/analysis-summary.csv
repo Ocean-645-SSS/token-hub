@@ -1,0 +1,13 @@
+metric,n,avg_ms,p50_ms,p95_ms,p99_ms,max_ms,note
+client_e2e,100,5375.580,5386.000,5398.000,5400.000,5400.000,profiling run original-compatible e2e
+server_t0_t11,100,683.190,678.497,1173.175,1204.121,1212.052,same JVM duration
+post_c1_c0,100,13.857,13.738,16.047,16.262,16.298,POST task preparation/queue observation
+post_c2_c1,100,242.545,247.188,332.643,342.752,344.792,POST HTTP duration
+poll_c4_c3,100,0.471,0.340,1.070,1.836,1.868,polling executor submit-to-worker
+post_response_to_first_poll,100,4860.060,4853.000,4966.000,5000.000,5034.000,includes POST batch barrier
+result_api_r3_r0,100,2.883,2.832,3.585,4.421,4.582,server duration
+result_store_lookup_r2_r1,100,2.883,2.831,3.585,4.408,4.582,Redis lookup section
+t11_to_first_r0,100,4502.860,4496.000,4974.000,5003.000,5039.000,cross JVM wall-clock correlation
+client_c7_c6,100,0.020,0.000,0.000,0.000,2.000,wall-clock ms resolution
+poll_count,100,1.000,1.000,1.000,1.000,1.000,no valid inter-poll interval
+get_http_wall_latency,100,258.901,267.523,282.840,284.777,285.549,client-side request duration

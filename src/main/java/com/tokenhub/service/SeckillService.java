@@ -17,12 +17,14 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import com.tokenhub.profiling.SeckillTrace;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
 @Service public class SeckillService {
     private static final DefaultRedisScript<Long> RESERVE_SCRIPT = reserveScript();
+    private static final DefaultRedisScript<Long> COMPENSATE_RESERVATION_SCRIPT = compensateReservationScript();
     private final StringRedisTemplate redis; private final SeckillActivityMapper activities; private final LocalMessageMapper messages; private final ObjectMapper json;
     @Autowired public SeckillService(StringRedisTemplate redis, SeckillActivityMapper activities, LocalMessageMapper messages, ObjectMapper json) { this.redis = redis; this.activities = activities; this.messages = messages; this.json = json; }
     /** Test-only compatibility constructor; production wiring always provides the outbox collaborators. */
@@ -33,14 +35,29 @@ import java.util.UUID;
     /** Atomically reserves only seckill stock; the asynchronous reservation workflow remains PENDING/SENT. */
     public SeckillReservationResponse reserveSeckillStock(long activityId) {
         long userId = requireUser(); String requestId = UUID.randomUUID().toString().replace("-", "");
+        SeckillTrace.start(requestId);
         Long result;
         try {
             result = redis.execute(RESERVE_SCRIPT, keys(activityId, requestId), Long.toString(userId), requestId, Long.toString(System.currentTimeMillis()));
         } catch (RuntimeException exception) {
             throw new BusinessException("SECKILL_UNAVAILABLE", "seckill is temporarily unavailable", HttpStatus.SERVICE_UNAVAILABLE);
         }
+        SeckillTrace.mark(requestId, "t1");
         if (result == null) throw unavailable();
-        if (result == 0) { if (messages != null) { redis.opsForHash().put(reservationKey(requestId), "reservationState", SeckillReservationState.STOCK_RESERVED.name()); createOrderMessage(new SeckillOrderMessage(requestId, userId, activityId, packageId(requestId))); } return new SeckillReservationResponse(requestId, "QUEUING"); }
+        if (result == 0) {
+            if (messages != null) {
+                try {
+                    redis.opsForHash().put(reservationKey(requestId), "reservationState", SeckillReservationState.STOCK_RESERVED.name());
+                    SeckillTrace.mark(requestId, "t2");
+                    createOrderMessage(new SeckillOrderMessage(requestId, userId, activityId, packageId(requestId)));
+                } catch (RuntimeException exception) {
+                    compensateReservation(activityId, requestId);
+                    throw unavailable();
+                }
+            }
+            SeckillTrace.mark(requestId, "t4");
+            return new SeckillReservationResponse(requestId, "QUEUING");
+        }
         throw error(result);
     }
     public SeckillResultResponse result(String requestId) {
@@ -72,7 +89,30 @@ import java.util.UUID;
     }
     private List<String> keys(long activityId, String requestId) { return List.of(activityKey(activityId), stockKey(activityId), usersKey(activityId), reservationKey(requestId)); }
     private long packageId(String requestId) { Object value = redis.opsForHash().get(reservationKey(requestId), "packageId"); if (value == null) throw unavailable(); return Long.parseLong(value.toString()); }
-    private void createOrderMessage(SeckillOrderMessage payload) { if (messages == null) return; try { LocalMessage message = new LocalMessage(); message.setMessageId(UUID.randomUUID().toString().replace("-", "")); message.setEventType("SECKILL_ORDER"); message.setBizId(payload.requestId()); message.setTopic("seckill.order"); message.setPayload(json.writeValueAsString(payload)); messages.insert(message); } catch (Exception exception) { throw unavailable(); } }
+    private void createOrderMessage(SeckillOrderMessage payload) {
+        if (messages == null) return;
+        try {
+            LocalMessage message = new LocalMessage();
+            message.setMessageId(UUID.randomUUID().toString().replace("-", ""));
+            message.setEventType("SECKILL_ORDER");
+            message.setBizId(payload.requestId());
+            message.setTopic("seckill.order");
+            message.setPayload(json.writeValueAsString(payload));
+            if (messages.insert(message) != 1) throw unavailable();
+            SeckillTrace.mark(payload.requestId(), "t3");
+            SeckillTrace.mark(payload.requestId(), "p0");
+        } catch (Exception exception) {
+            throw unavailable();
+        }
+    }
+    private void compensateReservation(long activityId, String requestId) {
+        try {
+            redis.execute(COMPENSATE_RESERVATION_SCRIPT,
+                    List.of(reservationKey(requestId), stockKey(activityId), "seckill:release:" + requestId));
+        } catch (RuntimeException ignored) {
+            // The original failure is returned to the caller; a Redis outage prevents immediate compensation.
+        }
+    }
     private String activityKey(long activityId) { return "seckill:activity:" + activityId; }
     private String stockKey(long activityId) { return "seckill:stock:" + activityId; }
     private String usersKey(long activityId) { return "seckill:users:" + activityId; }
@@ -90,4 +130,5 @@ import java.util.UUID;
         };
     }
     private static DefaultRedisScript<Long> reserveScript() { DefaultRedisScript<Long> script = new DefaultRedisScript<>(); script.setLocation(new ClassPathResource("lua/reserve_seckill_stock.lua")); script.setResultType(Long.class); return script; }
+    private static DefaultRedisScript<Long> compensateReservationScript() { DefaultRedisScript<Long> script = new DefaultRedisScript<>(); script.setLocation(new ClassPathResource("lua/compensate_seckill_reservation.lua")); script.setResultType(Long.class); return script; }
 }

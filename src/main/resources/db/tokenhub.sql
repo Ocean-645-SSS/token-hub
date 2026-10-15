@@ -16,9 +16,25 @@ CREATE TABLE IF NOT EXISTS token_package (
   name VARCHAR(128) NOT NULL, model_code VARCHAR(64) NOT NULL, token_amount BIGINT NOT NULL,
   price DECIMAL(10,2) NOT NULL, description VARCHAR(500) NOT NULL, suitable_scenario VARCHAR(500) NULL,
   stock BIGINT NOT NULL, status TINYINT NOT NULL DEFAULT 1,
+  catalog_version BIGINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_package_name (name), KEY idx_package_model_status (model_code, status)
 ) ENGINE=InnoDB;
+
+SET @has_catalog_version = (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'token_package' AND column_name = 'catalog_version'
+);
+SET @catalog_version_ddl = IF(
+  @has_catalog_version = 0,
+  'ALTER TABLE token_package ADD COLUMN catalog_version BIGINT NOT NULL DEFAULT 1',
+  'SELECT 1'
+);
+PREPARE tokenhub_catalog_version_stmt FROM @catalog_version_ddl;
+EXECUTE tokenhub_catalog_version_stmt;
+DEALLOCATE PREPARE tokenhub_catalog_version_stmt;
+UPDATE token_package
+SET catalog_version = GREATEST(catalog_version, CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(6)) * 1000000 AS UNSIGNED));
 
 CREATE TABLE IF NOT EXISTS seckill_activity (
   id BIGINT PRIMARY KEY AUTO_INCREMENT, package_id BIGINT NOT NULL, seckill_price DECIMAL(10,2) NOT NULL,
@@ -29,11 +45,11 @@ CREATE TABLE IF NOT EXISTS seckill_activity (
 
 CREATE TABLE IF NOT EXISTS orders (
   id BIGINT PRIMARY KEY AUTO_INCREMENT, order_no VARCHAR(32) NOT NULL, user_id BIGINT NOT NULL, package_id BIGINT NOT NULL,
-  order_type ENUM('NORMAL','SECKILL') NOT NULL, seckill_activity_id BIGINT NULL, request_id VARCHAR(64) NULL,
+  order_type ENUM('NORMAL','SECKILL') NOT NULL, seckill_activity_id BIGINT NULL, request_id VARCHAR(64) NULL, purchase_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   original_price DECIMAL(10,2) NOT NULL, pay_price DECIMAL(10,2) NOT NULL, token_amount BIGINT NOT NULL,
   status INT NOT NULL CHECK (status IN (101,102,103,201,301,302,401)), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME NULL, completed_at DATETIME NULL, expired_at DATETIME NULL,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_order_no (order_no), UNIQUE KEY uk_request_id (request_id), UNIQUE KEY uk_user_activity (user_id, seckill_activity_id),
+  UNIQUE KEY uk_order_user_purchase_key (user_id, purchase_key), UNIQUE KEY uk_order_no (order_no), UNIQUE KEY uk_request_id (request_id), UNIQUE KEY uk_user_activity (user_id, seckill_activity_id),
   KEY idx_order_user_id (user_id), KEY idx_order_status (status)
 ) ENGINE=InnoDB;
 
@@ -69,7 +85,7 @@ CREATE TABLE IF NOT EXISTS local_message (
   id BIGINT PRIMARY KEY AUTO_INCREMENT, message_id VARCHAR(64) NOT NULL, event_type VARCHAR(64) NOT NULL, biz_id VARCHAR(64) NOT NULL,
   topic VARCHAR(64) NOT NULL, payload TEXT NOT NULL, status TINYINT NOT NULL DEFAULT 0, retry_count INT NOT NULL DEFAULT 0, next_retry_time DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_message_id (message_id), UNIQUE KEY uk_message_event_biz (event_type, biz_id), KEY idx_message_status_retry (status, next_retry_time)
+  UNIQUE KEY uk_message_id (message_id), UNIQUE KEY uk_message_event_biz (event_type, biz_id), KEY idx_message_status_retry (status, next_retry_time), KEY idx_message_publish (status, next_retry_time, id)
 ) ENGINE=InnoDB;
 
 INSERT INTO `user` (username, password_hash, status) VALUES ('demo', '$2a$10$uBzFCXGB94jqLLwE.TcRkeX8gPijz1.UMHbv7EEJDWiqTcFo3yBt6', 1)
@@ -85,3 +101,17 @@ FROM token_package
 WHERE NOT EXISTS (SELECT 1 FROM seckill_activity)
 ORDER BY id
 LIMIT 1;
+
+-- Rerunnable migration for existing installations.
+SET @purchase_key_ddl = IF(
+  (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='orders' AND column_name='purchase_key')=0,
+  'ALTER TABLE orders ADD COLUMN purchase_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL', 'SELECT 1');
+PREPARE purchase_key_stmt FROM @purchase_key_ddl;
+EXECUTE purchase_key_stmt;
+DEALLOCATE PREPARE purchase_key_stmt;
+SET @purchase_index_ddl = IF(
+  (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='orders' AND index_name='uk_order_user_purchase_key')=0,
+  'ALTER TABLE orders ADD UNIQUE KEY uk_order_user_purchase_key (user_id,purchase_key)', 'SELECT 1');
+PREPARE purchase_index_stmt FROM @purchase_index_ddl;
+EXECUTE purchase_index_stmt;
+DEALLOCATE PREPARE purchase_index_stmt;

@@ -9,4 +9,6 @@ public record AiRecommendResponse(
         String usageAssumption,
         PackageSearchCriteria criteria,
         List<TokenPackage> candidates,
-        String recommendation) { }
+        String recommendation,
+        boolean needsClarification,
+        String clarificationQuestion) { }
