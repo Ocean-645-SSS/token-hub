@@ -16,17 +16,24 @@ class SeckillOrderServiceTest {
     private final SeckillActivityMapper activities = mock(SeckillActivityMapper.class);
     private final TokenPackageMapper packages = mock(TokenPackageMapper.class);
     private final LocalMessageMapper messages = mock(LocalMessageMapper.class);
-    private final SeckillOrderService service = new SeckillOrderService(redis, orders, activities, packages, messages);
+    private final SeckillReservationMapper reservations = mock(SeckillReservationMapper.class);
+    private final SeckillReservationService recovery = mock(SeckillReservationService.class);
+    private final SeckillOrderService service = new SeckillOrderService(redis, orders, activities, packages, messages, reservations, recovery);
+    private void reservation(String state) {
+        SeckillReservation record = new SeckillReservation(); record.setRequestId("req1"); record.setUserId(7L);
+        record.setActivityId(2L); record.setPackageId(3L); record.setState(state);
+        when(reservations.lock("req1")).thenReturn(record);
+    }
     private final SeckillOrderMessage message = new SeckillOrderMessage("req1", 7L, 2L, 3L);
     private void validReservation() {
-        when(redis.opsForHash().get("seckill:reservation:req1", "status")).thenReturn("PENDING");
+        reservation("RESERVED");
         SeckillActivity activity = new SeckillActivity(); activity.setPackageId(3L);
         TokenPackage tokenPackage = new TokenPackage(); tokenPackage.setId(3L);
         when(activities.findById(2L)).thenReturn(activity); when(packages.findById(3L)).thenReturn(tokenPackage);
         when(orders.insertSeckill(any())).thenReturn(1); when(messages.insert(any())).thenReturn(1);
     }
     @Test void releasedReservationCannotCreateLateOrder() {
-        when(redis.opsForHash().get("seckill:reservation:req1", "status")).thenReturn("RELEASED");
+        reservation("RELEASED");
         service.create(message); verifyNoInteractions(orders, activities, packages, messages);
     }
     @Test void firstCreationWritesTimeoutAndReplayDoesNotWriteAnother() {

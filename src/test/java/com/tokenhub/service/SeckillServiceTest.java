@@ -14,16 +14,21 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class SeckillServiceTest {
-    private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
+    private final StringRedisTemplate redis = mock(StringRedisTemplate.class, RETURNS_DEEP_STUBS);
     private final SeckillActivityMapper activities = mock(SeckillActivityMapper.class);
-    private final SeckillService service = new SeckillService(redis, activities);
+    private final SeckillReservationService reservations = mock(SeckillReservationService.class);
+    private final com.tokenhub.mapper.SeckillReservationMapper records = mock(com.tokenhub.mapper.SeckillReservationMapper.class);
+    private final SeckillInventoryProjection projection = mock(SeckillInventoryProjection.class);
+    private final SeckillService service = new SeckillService(redis, activities, reservations, records, projection);
+    @org.junit.jupiter.api.BeforeEach void packageId() { when(redis.opsForHash().get(anyString(), eq("packageId"))).thenReturn("23"); }
     @AfterEach void clearUser() { CurrentUser.clear(); }
 
-    @Test void successfulLuaReservationReturnsUniqueQueuingRequestWithoutDatabaseLookup() {
+    @Test void successfulAdmissionPersistsReservationBeforeReturningQueuing() {
         CurrentUser.set(8L); when(redis.execute(any(), anyList(), any(), any(), any())).thenReturn(0L);
         var response = service.reserve(15L);
         assertEquals("QUEUING", response.status()); assertEquals(32, response.requestId().length());
         verifyNoInteractions(activities);
+        verify(reservations).reserve(any());
     }
 
     @Test void explicitStockReservationMethodKeepsQuotaFreezingSeparate() {
@@ -46,28 +51,31 @@ class SeckillServiceTest {
         verifyNoInteractions(activities);
     }
 
-    @Test void outboxInsertFailureImmediatelyCompensatesReservedRedisStock() {
-        StringRedisTemplate redis = mock(StringRedisTemplate.class, RETURNS_DEEP_STUBS);
-        LocalMessageMapper messages = mock(LocalMessageMapper.class);
-        SeckillService service = new SeckillService(redis, activities, messages, new com.fasterxml.jackson.databind.ObjectMapper());
+    @Test void durableWriteFailureRepairsEstimateUsingSnapshotInsteadOfIncrement() {
         CurrentUser.set(8L);
         when(redis.execute(any(), anyList(), any(), any(), any())).thenReturn(0L);
-        when(redis.opsForHash().get(anyString(), eq("packageId"))).thenReturn("23");
-        when(messages.insert(any())).thenReturn(0);
+        doThrow(new IllegalStateException("outbox insert failed")).when(reservations).reserve(any());
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.reserve(15L));
 
         assertEquals("SECKILL_UNAVAILABLE", error.code());
-        verify(redis).execute(any(), org.mockito.ArgumentMatchers.<java.util.List<String>>argThat(keys -> keys.size() == 3
-                && keys.get(0).startsWith("seckill:reservation:")
-                && keys.get(1).equals("seckill:stock:15")
-                && keys.get(2).startsWith("seckill:release:")));
+        verify(projection).synchronize(15L);
     }
 
     @Test void preheatRejectsInvalidActivityBeforeWritingRedis() {
         SeckillActivity activity = new SeckillActivity(); activity.setId(1L); activity.setStatus(1); activity.setStock(1L); activity.setStartTime(LocalDateTime.now()); activity.setEndTime(LocalDateTime.now());
         when(activities.findById(1L)).thenReturn(activity);
         assertEquals("SECKILL_ACTIVITY_INVALID", assertThrows(BusinessException.class, () -> service.preheat(1L)).code());
+        verifyNoInteractions(projection);
+    }
+
+    @Test void resultSurvivesRedisLossAndPreservesCancelledOrderLookup() {
+        CurrentUser.set(8L);
+        var record = new com.tokenhub.entity.SeckillReservation();
+        record.setUserId(8L); record.setState("RELEASED"); record.setOrderNo("ORD1");
+        when(records.find("req1")).thenReturn(record);
+        clearInvocations(redis);
+        assertEquals("SUCCESS:ORD1", service.result("req1").result());
         verifyNoInteractions(redis);
     }
 }

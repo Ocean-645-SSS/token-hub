@@ -200,7 +200,11 @@ public class LocalMessagePublisher {
                     SeckillTrace.mark(message.getBizId(), "t7");
                     SeckillTrace.mark(message.getBizId(), "m1");
                 }
-                markReservationSent(message);
+                try { markReservationSent(message); }
+                catch (RuntimeException exception) {
+                    // The durable reservation, not this cache hint, owns the business state.
+                    log.warn("broker confirmed messageId={} but reservation cache is unavailable", message.getMessageId(), exception);
+                }
                 if (messages.markSentClaimedById(message.getId()) == 1) confirmed.increment();
                 return;
             }

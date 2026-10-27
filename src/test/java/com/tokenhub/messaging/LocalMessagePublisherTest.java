@@ -21,6 +21,25 @@ import static org.mockito.Mockito.*;
 
 class LocalMessagePublisherTest {
     @Test
+    void redisFailureDoesNotUndoBrokerConfirmation() {
+        LocalMessageMapper messages = mock(LocalMessageMapper.class);
+        RabbitTemplate rabbit = mock(RabbitTemplate.class);
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        when(redis.execute(any(org.springframework.data.redis.core.script.RedisScript.class), anyList()))
+                .thenThrow(new IllegalStateException("redis unavailable"));
+        LocalMessage message = message(21L); message.setEventType("SECKILL_ORDER"); message.setBizId("req21");
+        AtomicReference<CorrelationData> correlation = new AtomicReference<>();
+        doAnswer(invocation -> { correlation.set(invocation.getArgument(4)); return null; })
+                .when(rabbit).convertAndSend(anyString(), anyString(), any(Object.class), any(org.springframework.amqp.core.MessagePostProcessor.class), any(CorrelationData.class));
+        ThreadPoolTaskExecutor executor = executor(1, 1, 10);
+        try {
+            new LocalMessagePublisher(messages, rabbit, redis, properties(), executor).publishClaimed(message);
+            correlation.get().getFuture().complete(new CorrelationData.Confirm(true, null));
+            verify(messages).markSentClaimedById(21L);
+            verify(messages, never()).recordClaimedRetry(anyLong(), anyInt());
+        } finally { executor.shutdown(); }
+    }
+    @Test
     void acknowledgedConfirmMarksOnlyClaimedMessageAsSent() throws Exception {
         LocalMessageMapper messages = mock(LocalMessageMapper.class);
         RabbitTemplate rabbit = mock(RabbitTemplate.class);

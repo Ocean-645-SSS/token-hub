@@ -18,6 +18,10 @@ public class RabbitConsumerConfig {
         factory.setConcurrentConsumers(properties.concurrency());
         factory.setMaxConcurrentConsumers(properties.maxConcurrency());
         factory.setPrefetchCount(properties.prefetch());
+        factory.setDefaultRequeueRejected(false);
+        factory.setAdviceChain(org.springframework.amqp.rabbit.config.RetryInterceptorBuilder.stateless()
+                .maxAttempts(3).backOffOptions(200, 2.0, 1000)
+                .recoverer(new org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer()).build());
         return factory;
     }
 }
