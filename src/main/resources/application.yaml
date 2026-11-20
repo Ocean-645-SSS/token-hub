@@ -51,6 +51,29 @@ tokenhub:
     connect-timeout-ms: ${TOKENHUB_MODEL_CONNECT_TIMEOUT_MS:3000}
     read-timeout-ms: ${TOKENHUB_MODEL_READ_TIMEOUT_MS:30000}
     max-attempts: ${TOKENHUB_MODEL_MAX_ATTEMPTS:3}
+    # Optional multi-provider routing. When empty, a single "default" provider is used (backward compatible).
+    # providers:
+    #   - code: openai
+    #     type: openai
+    #     base-url: http://127.0.0.1:18080
+    #     api-key: local-mock-key
+    #     unit-cost: 0.0001
+    #   - code: deepseek
+    #     type: openai          # DeepSeek is OpenAI-compatible
+    #     base-url: https://api.deepseek.com
+    #     api-key: sk-xxx
+    #     unit-cost: 0.00005
+    #   - code: claude
+    #     type: anthropic
+    #     base-url: https://api.anthropic.com
+    #     api-key: sk-ant-xxx
+    #     unit-cost: 0.0002
+    circuit-breaker:
+      failure-threshold: ${TOKENHUB_CIRCUIT_BREAKER_FAILURE_THRESHOLD:3}
+      cooldown-ms: ${TOKENHUB_CIRCUIT_BREAKER_COOLDOWN_MS:10000}
+    routing:
+      cost-weight: ${TOKENHUB_ROUTING_COST_WEIGHT:1.0}
+      latency-weight: ${TOKENHUB_ROUTING_LATENCY_WEIGHT:1.0}
   rate-limit:
     api-key-qps: ${TOKENHUB_RATE_LIMIT_API_KEY_QPS:5}
   elasticsearch:

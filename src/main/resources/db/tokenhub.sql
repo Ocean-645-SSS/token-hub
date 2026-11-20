@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS api_key (
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS model_request (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT, request_id VARCHAR(64) NOT NULL, user_id BIGINT NOT NULL, api_key_id BIGINT NOT NULL, model_code VARCHAR(64) NOT NULL,
+  id BIGINT PRIMARY KEY AUTO_INCREMENT, request_id VARCHAR(64) NOT NULL, user_id BIGINT NOT NULL, api_key_id BIGINT NOT NULL, model_code VARCHAR(64) NOT NULL, provider_code VARCHAR(64) NULL,
   input_tokens BIGINT NULL, output_tokens BIGINT NULL, total_tokens BIGINT NULL, reserved_tokens BIGINT NOT NULL,
   status ENUM('PROCESSING','SUCCESS','FAILED','BILLING_UNKNOWN') NOT NULL, retry_count INT NOT NULL DEFAULT 0,
   provider_cost_status ENUM('KNOWN','UNKNOWN') NOT NULL DEFAULT 'UNKNOWN', result_reference TEXT NULL,
