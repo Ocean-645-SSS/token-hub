@@ -8,7 +8,7 @@ import java.util.List;
 
 /**
  * Orders upstream provider candidates by a cost + latency score (lower is better)
- * and drops providers whose circuit breaker is OPEN. Weights are configuration
+ * and skips providers temporarily blocked by their circuit breaker. Weights are configuration
  * driven; equal weights are the demo default and would be calibrated in production.
  */
 @Component
@@ -24,10 +24,15 @@ public class ProviderRouter {
         this.latencyWeight = props.getRouting().getLatencyWeight();
     }
 
-    /** Candidates that may serve a request right now, best first. OPEN breakers are excluded. */
+    /** Candidates that may serve a request right now, best first. */
     public List<ProviderEntry> routeOrder() {
+        return routeOrder(null);
+    }
+
+    public List<ProviderEntry> routeOrder(String model) {
         return registry.entries().stream()
-                .filter(e -> e.breaker().state() != CircuitBreaker.State.OPEN)
+                .filter(e -> model == null || e.supports(model))
+                .filter(e -> e.breaker().eligible())
                 .sorted(Comparator.comparingDouble(this::score))
                 .toList();
     }

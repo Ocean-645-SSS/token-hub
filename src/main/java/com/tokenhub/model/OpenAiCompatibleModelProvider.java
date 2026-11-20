@@ -26,6 +26,7 @@ public class OpenAiCompatibleModelProvider extends HttpModelProvider {
         payload.put("model", request.model());
         payload.put("messages", request.messages());
         payload.put("max_tokens", request.maxTokens());
+        if (request.tools() != null) payload.put("tools", request.tools());
         return payload;
     }
 
@@ -35,7 +36,4 @@ public class OpenAiCompatibleModelProvider extends HttpModelProvider {
         return new ProviderResponse(result, number(usage.get("prompt_tokens")), number(usage.get("completion_tokens")), number(usage.get("total_tokens")));
     }
 
-    @Override protected boolean isRetryable(int status) {
-        return status == 429 || status == 502 || status == 503 || status == 504;
-    }
 }

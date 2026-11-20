@@ -52,6 +52,8 @@ tokenhub:
     read-timeout-ms: ${TOKENHUB_MODEL_READ_TIMEOUT_MS:30000}
     max-attempts: ${TOKENHUB_MODEL_MAX_ATTEMPTS:3}
     # Optional multi-provider routing. When empty, a single "default" provider is used (backward compatible).
+    # Empty models maps pass through model IDs for OpenAI-compatible providers.
+    # Configure a models map on each provider when their supported models differ.
     # providers:
     #   - code: openai
     #     type: openai
@@ -68,6 +70,8 @@ tokenhub:
     #     base-url: https://api.anthropic.com
     #     api-key: sk-ant-xxx
     #     unit-cost: 0.0002
+    #     models:              # Public model ID -> upstream model ID
+    #       claude-sonnet: claude-sonnet-4-6
     circuit-breaker:
       failure-threshold: ${TOKENHUB_CIRCUIT_BREAKER_FAILURE_THRESHOLD:3}
       cooldown-ms: ${TOKENHUB_CIRCUIT_BREAKER_COOLDOWN_MS:10000}

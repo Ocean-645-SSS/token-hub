@@ -2,6 +2,7 @@ package com.tokenhub.routing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tokenhub.config.ModelProperties;
+import com.tokenhub.model.AnthropicProvider;
 import com.tokenhub.model.ModelProvider;
 import com.tokenhub.model.OpenAiCompatibleModelProvider;
 import com.tokenhub.model.ProviderAdapterFactory;
@@ -27,8 +28,15 @@ public class ProviderRegistry {
             for (ModelProperties.Provider p : props.getProviders()) {
                 ModelProvider provider = ProviderAdapterFactory.create(
                         p, props.getConnectTimeoutMs(), props.getReadTimeoutMs(), json);
+                if (p.getModels().isEmpty() && provider instanceof AnthropicProvider) {
+                    throw new IllegalArgumentException("Anthropic provider requires model mappings: " + p.getCode());
+                }
+                if (p.getModels().entrySet().stream().anyMatch(e -> e.getKey().isBlank()
+                        || e.getValue() == null || e.getValue().isBlank())) {
+                    throw new IllegalArgumentException("Invalid provider model mapping: " + p.getCode());
+                }
                 entries.add(new ProviderEntry(p.getCode(), provider, p.getUnitCost(),
-                        new CircuitBreaker(cb.getFailureThreshold(), cb.getCooldownMs())));
+                        new CircuitBreaker(cb.getFailureThreshold(), cb.getCooldownMs()), p.getModels()));
             }
         }
         if (entries.isEmpty()) {

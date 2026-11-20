@@ -6,6 +6,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.mockito.Mockito.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,6 +51,33 @@ class ProviderRouterTest {
         assertEquals(1, registry.entries().size());
         assertEquals("default", registry.entries().get(0).code());
         assertSame(registry.entries().get(0).provider(), registry.defaultProvider());
+    }
+
+    @Test void cooldownRestoresOnlyCompatibleProviderForASingleProbe() {
+        AtomicLong now = new AtomicLong();
+        CircuitBreaker breaker = new CircuitBreaker(1, 10, now::get);
+        ProviderEntry candidate = new ProviderEntry("mapped", null, 2, breaker, Map.of("public", "vendor"));
+        ProviderEntry wrongModel = new ProviderEntry("other", null, 0, new CircuitBreaker(1, 10),
+                Map.of("different", "different"));
+        ProviderRegistry registry = mock(ProviderRegistry.class);
+        when(registry.entries()).thenReturn(List.of(candidate, wrongModel));
+        ProviderRouter router = new ProviderRouter(registry, new ModelProperties());
+
+        var stale = breaker.acquire();
+        breaker.acquire().complete(CircuitBreaker.Outcome.FAILURE);
+        assertTrue(router.routeOrder("public").isEmpty());
+        now.addAndGet(TimeUnit.MILLISECONDS.toNanos(10));
+        assertEquals(List.of(candidate), router.routeOrder("public"));
+        assertEquals("vendor", candidate.upstreamModel("public"));
+        assertEquals(CircuitBreaker.State.OPEN, breaker.state());
+        var probe = breaker.acquire();
+        assertTrue(probe.probe());
+        stale.complete(CircuitBreaker.Outcome.SUCCESS);
+        assertNull(breaker.acquire());
+        assertTrue(router.routeOrder("public").isEmpty());
+        probe.complete(CircuitBreaker.Outcome.NEUTRAL);
+        breaker.acquire().complete(CircuitBreaker.Outcome.SUCCESS);
+        assertEquals(CircuitBreaker.State.CLOSED, breaker.state());
     }
 
     private ProviderRegistry registryWithCosts(double... costs) {

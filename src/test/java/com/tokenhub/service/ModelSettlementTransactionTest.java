@@ -1,0 +1,140 @@
+package com.tokenhub.service;
+
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.tokenhub.common.ModelRequestStatus;
+import com.tokenhub.common.ProviderCostStatus;
+import com.tokenhub.config.BillingProperties;
+import com.tokenhub.entity.ModelRequest;
+import com.tokenhub.mapper.*;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+
+import javax.sql.DataSource;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringJUnitConfig(ModelSettlementTransactionTest.Config.class)
+class ModelSettlementTransactionTest {
+    @Configuration
+    @EnableTransactionManagement
+    @MapperScan("com.tokenhub.mapper")
+    static class Config {
+        @Bean DataSource dataSource() {
+            return new DriverManagerDataSource("jdbc:h2:mem:modelSettlement;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        }
+        @Bean DataSourceTransactionManager transactions(DataSource source) {
+            return new DataSourceTransactionManager(source);
+        }
+        @Bean SqlSessionFactory sqlSessionFactory(DataSource source) throws Exception {
+            var factory = new MybatisSqlSessionFactoryBean();
+            factory.setDataSource(source);
+            var configuration = new MybatisConfiguration();
+            configuration.setMapUnderscoreToCamelCase(true);
+            factory.setConfiguration(configuration);
+            return factory.getObject();
+        }
+        @Bean TokenReservationService reservations(ModelRequestMapper requests, TokenWalletMapper wallets,
+                                                    TokenLedgerMapper ledgers, UserMapper users) {
+            return new TokenReservationService(requests, wallets, ledgers, users, new BillingProperties());
+        }
+    }
+
+    @Autowired DataSource dataSource;
+    @Autowired TokenReservationService reservations;
+    @Autowired ModelRequestMapper requests;
+    @Autowired TokenWalletMapper wallets;
+    private JdbcTemplate jdbc;
+
+    @BeforeEach void prepare() {
+        jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("drop table if exists model_request, token_wallet, token_ledger");
+        jdbc.execute("""
+                create table model_request (
+                  id bigint auto_increment primary key, request_id varchar(64) unique, user_id bigint,
+                  api_key_id bigint, model_code varchar(64), reserved_tokens bigint, reservation_active boolean default false,
+                  status varchar(32), provider_code varchar(64), input_tokens bigint, output_tokens bigint, total_tokens bigint,
+                  retry_count int default 0, provider_cost_status varchar(32) default 'UNKNOWN', result_reference text,
+                  created_at timestamp default current_timestamp, finished_at timestamp
+                )
+                """);
+        jdbc.execute("""
+                create table token_wallet (
+                  id bigint auto_increment primary key, user_id bigint, model_code varchar(64), available_token bigint,
+                  frozen_token bigint, credit_limit bigint, version int, unique(user_id, model_code)
+                )
+                """);
+        jdbc.execute("""
+                create table token_ledger (
+                  id bigint auto_increment primary key, user_id bigint, model_code varchar(64), biz_id varchar(78) unique,
+                  type varchar(32), amount bigint, balance_before bigint, balance_after bigint, remark varchar(255)
+                )
+                """);
+        wallets.createIfAbsent(1, "model");
+        wallets.addAvailable(wallets.findByUserAndModel(1, "model").getId(), 100);
+    }
+
+    @Test void ledgerFailureRollsBackWalletAndStatusAndSuccessfulRetryChargesOnce() {
+        ModelRequest request = reserve("r".repeat(64));
+        assertWallet(70, 30);
+        request.setStatus(ModelRequestStatus.SUCCESS);
+        request.setTotalTokens(12L);
+        request.setProviderCostStatus(ProviderCostStatus.KNOWN);
+        jdbc.execute("alter table token_ledger add constraint reject_consumption check (amount >= 0)");
+
+        assertThrows(RuntimeException.class, () -> reservations.finish(request));
+        assertWallet(70, 30);
+        assertEquals(ModelRequestStatus.PROCESSING, requests.findByRequestId(request.getRequestId()).getStatus());
+
+        jdbc.execute("alter table token_ledger drop constraint reject_consumption");
+        assertTrue(reservations.finish(request));
+        assertFalse(reservations.finish(request));
+        assertWallet(88, 0);
+        assertEquals(1, jdbc.queryForObject("select count(*) from token_ledger", Integer.class));
+    }
+
+    @Test void expiredDispatchedRequestPreservesProviderAndPreventsLateSettlement() {
+        ModelRequest request = reserve("expired");
+        request.setProviderCode("vendor");
+        request.setRetryCount(1);
+        assertEquals(1, requests.recordAttempt(request));
+        reservations.expire(request.getRequestId());
+
+        ModelRequest saved = requests.findByRequestId(request.getRequestId());
+        assertEquals(ModelRequestStatus.BILLING_UNKNOWN, saved.getStatus());
+        assertEquals("vendor", saved.getProviderCode());
+        assertEquals(1, saved.getRetryCount());
+        request.setStatus(ModelRequestStatus.SUCCESS);
+        request.setTotalTokens(12L);
+        assertFalse(reservations.finish(request));
+        assertWallet(100, 0);
+    }
+
+    private ModelRequest reserve(String id) {
+        ModelRequest request = new ModelRequest();
+        request.setRequestId(id);
+        request.setUserId(1L);
+        request.setApiKeyId(1L);
+        request.setModelCode("model");
+        request.setReservedTokens(30L);
+        request.setStatus(ModelRequestStatus.PROCESSING);
+        reservations.freeze(request);
+        return request;
+    }
+
+    private void assertWallet(long available, long frozen) {
+        var wallet = wallets.findByUserAndModel(1, "model");
+        assertEquals(available, wallet.getAvailableToken());
+        assertEquals(frozen, wallet.getFrozenToken());
+    }
+}

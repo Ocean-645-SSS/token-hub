@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Data @ConfigurationProperties(prefix = "tokenhub.model")
 public class ModelProperties {
@@ -27,6 +29,7 @@ public class ModelProperties {
         private String baseUrl;
         private String apiKey;
         private double unitCost;
+        private Map<String, String> models = new LinkedHashMap<>();
     }
 
     @Data public static class CircuitBreaker {

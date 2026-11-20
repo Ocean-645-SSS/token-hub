@@ -1,24 +1,105 @@
 package com.tokenhub.service;
+
 import com.tokenhub.common.BusinessException;
+import com.tokenhub.common.LedgerType;
+import com.tokenhub.common.ModelRequestStatus;
+import com.tokenhub.common.ProviderCostStatus;
 import com.tokenhub.config.BillingProperties;
+import com.tokenhub.entity.ModelRequest;
+import com.tokenhub.entity.TokenLedger;
 import com.tokenhub.entity.TokenWallet;
+import com.tokenhub.mapper.ModelRequestMapper;
+import com.tokenhub.mapper.TokenLedgerMapper;
 import com.tokenhub.mapper.TokenWalletMapper;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
+import com.tokenhub.mapper.UserMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import java.util.*;
-@Service public class TokenReservationService {
- private final StringRedisTemplate redis; private final TokenWalletMapper wallets; private final BillingProperties config;
- private final DefaultRedisScript<Long> freeze=new DefaultRedisScript<>("local a=tonumber(redis.call('HGET',KEYS[1],'available')); local c=tonumber(redis.call('HGET',KEYS[1],'credit')); local x=tonumber(ARGV[1]); if a-x < -c then return 0 end; redis.call('HINCRBY',KEYS[1],'available',-x); redis.call('HINCRBY',KEYS[1],'frozen',x); redis.call('HSET',KEYS[2],'status','FROZEN','amount',x,'wallet',KEYS[1]); return 1",Long.class);
- private final DefaultRedisScript<Long> release=new DefaultRedisScript<>("if redis.call('HGET',KEYS[1],'status') ~= 'FROZEN' then return 0 end; local x=tonumber(redis.call('HGET',KEYS[1],'amount')); redis.call('HINCRBY',KEYS[2],'available',x); redis.call('HINCRBY',KEYS[2],'frozen',-x); redis.call('HSET',KEYS[1],'status','RELEASED'); return 1",Long.class);
- private final DefaultRedisScript<Long> settle=new DefaultRedisScript<>("if redis.call('HGET',KEYS[1],'status') ~= 'FROZEN' then return 0 end; local r=tonumber(redis.call('HGET',KEYS[1],'amount')); local u=tonumber(ARGV[1]); redis.call('HINCRBY',KEYS[2],'available',r-u); redis.call('HINCRBY',KEYS[2],'frozen',-r); redis.call('HSET',KEYS[1],'status','SETTLED'); return 1",Long.class);
- public TokenReservationService(StringRedisTemplate redis,TokenWalletMapper wallets,BillingProperties config){this.redis=redis;this.wallets=wallets;this.config=config;}
- public void freeze(long userId,String model,String requestId,long amount){String wallet=walletKey(userId,model);ensure(wallet,userId,model); Long ok=redis.execute(freeze,List.of(wallet,reservationKey(requestId)),Long.toString(amount)); if(ok==null||ok==0)throw new BusinessException("CREDIT_LIMIT_EXCEEDED","token credit limit exceeded",HttpStatus.PAYMENT_REQUIRED); TokenWallet w=lock(userId,model);wallets.setBalances(w.getId(),w.getAvailableToken()-amount,w.getFrozenToken()+amount);}
- public void release(long userId,String model,String requestId){Long ok=redis.execute(release,List.of(reservationKey(requestId),walletKey(userId,model)));if(ok!=null&&ok==1){TokenWallet w=lock(userId,model);long a=amount(requestId);wallets.setBalances(w.getId(),w.getAvailableToken()+a,w.getFrozenToken()-a);}}
- public void settleRedis(long userId,String model,String requestId,long used){Long ok=redis.execute(settle,List.of(reservationKey(requestId),walletKey(userId,model)),Long.toString(used));if(ok==null||ok==0)throw new IllegalStateException("reservation not frozen");}
- public long amount(String requestId){Object v=redis.opsForHash().get(reservationKey(requestId),"amount");return v==null?0:Long.parseLong(v.toString());}
- private void ensure(String key,long userId,String model){if(Boolean.TRUE.equals(redis.hasKey(key)))return; TokenWallet w=wallets.findByUserAndModel(userId,model);if(w==null){wallets.createIfAbsent(userId,model);w=wallets.findByUserAndModel(userId,model);} redis.opsForHash().put(key,"available",Long.toString(w.getAvailableToken()));redis.opsForHash().put(key,"frozen",Long.toString(w.getFrozenToken()));redis.opsForHash().put(key,"credit",Long.toString(config.getCreditLimit()));}
- public TokenWallet lock(long userId,String model){TokenWallet w=wallets.lockByUserAndModel(userId,model);if(w==null)throw new IllegalStateException("wallet missing");return w;}
- public static String walletKey(long userId,String model){return "wallet:"+userId+":"+model;} public static String reservationKey(String id){return "token:reservation:"+id;}
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class TokenReservationService {
+    private final ModelRequestMapper requests;
+    private final TokenWalletMapper wallets;
+    private final TokenLedgerMapper ledgers;
+    private final UserMapper users;
+    private final BillingProperties billing;
+
+    public TokenReservationService(ModelRequestMapper requests, TokenWalletMapper wallets,
+                                   TokenLedgerMapper ledgers, UserMapper users, BillingProperties billing) {
+        this.requests = requests;
+        this.wallets = wallets;
+        this.ledgers = ledgers;
+        this.users = users;
+        this.billing = billing;
+    }
+
+    @Transactional
+    public void freeze(ModelRequest request) {
+        requests.insert(request);
+        if (wallets.findByUserAndModel(request.getUserId(), request.getModelCode()) == null) {
+            wallets.createIfAbsent(request.getUserId(), request.getModelCode());
+        }
+        TokenWallet wallet = lockWallet(request);
+        long amount = request.getReservedTokens();
+        long available = wallet.getAvailableToken() - amount;
+        if (available < -billing.getCreditLimit()) {
+            throw new BusinessException("CREDIT_LIMIT_EXCEEDED", "token credit limit exceeded",
+                    HttpStatus.PAYMENT_REQUIRED);
+        }
+        wallets.setBalances(wallet.getId(), available, wallet.getFrozenToken() + amount);
+        request.setReservationActive(true);
+    }
+
+    @Transactional
+    public boolean finish(ModelRequest request) {
+        if (requests.finish(request) == 0) return false;
+        // Old in-flight rows need reconciliation using the old reservation records.
+        if (!request.isReservationActive()) return true;
+
+        TokenWallet wallet = lockWallet(request);
+        long reserved = request.getReservedTokens();
+        long frozen = wallet.getFrozenToken() - reserved;
+        if (frozen < 0) throw new IllegalStateException("wallet reservation is missing");
+
+        long before = wallet.getAvailableToken() + reserved;
+        boolean success = request.getStatus() == ModelRequestStatus.SUCCESS;
+        long available = success ? before - request.getTotalTokens() : before;
+        wallets.setBalances(wallet.getId(), available, frozen);
+        if (success) {
+            writeLedger(request, before, available);
+            if (available < -billing.getCreditLimit()) users.suspend(request.getUserId());
+        }
+        return true;
+    }
+
+    @Transactional
+    public void expire(String requestId) {
+        ModelRequest request = requests.lockByRequestId(requestId);
+        if (request == null || request.getStatus() != ModelRequestStatus.PROCESSING) return;
+        request.setStatus(request.isReservationActive() && request.getProviderCode() == null
+                ? ModelRequestStatus.FAILED : ModelRequestStatus.BILLING_UNKNOWN);
+        request.setProviderCostStatus(ProviderCostStatus.UNKNOWN);
+        finish(request);
+    }
+
+    private TokenWallet lockWallet(ModelRequest request) {
+        TokenWallet wallet = wallets.lockByUserAndModel(request.getUserId(), request.getModelCode());
+        if (wallet == null) throw new IllegalStateException("wallet missing");
+        return wallet;
+    }
+
+    private void writeLedger(ModelRequest request, long before, long available) {
+        TokenLedger ledger = new TokenLedger();
+        ledger.setUserId(request.getUserId());
+        ledger.setModelCode(request.getModelCode());
+        ledger.setBizId("MODEL_CONSUME_" + request.getRequestId());
+        ledger.setType(LedgerType.CONSUME);
+        ledger.setAmount(-request.getTotalTokens());
+        ledger.setBalanceBefore(before);
+        ledger.setBalanceAfter(available);
+        ledger.setRemark("model request");
+        if (ledgers.insertIgnore(ledger) != 1) {
+            throw new IllegalStateException("model consumption ledger already exists");
+        }
+    }
 }

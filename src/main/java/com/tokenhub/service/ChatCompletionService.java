@@ -1,40 +1,235 @@
 package com.tokenhub.service;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tokenhub.common.*;
-import com.tokenhub.config.*;
+import com.tokenhub.common.BusinessException;
+import com.tokenhub.common.ModelRequestStatus;
+import com.tokenhub.common.ProviderCostStatus;
+import com.tokenhub.config.BillingProperties;
+import com.tokenhub.config.ModelProperties;
 import com.tokenhub.dto.ChatCompletionRequest;
-import com.tokenhub.entity.*;
-import com.tokenhub.mapper.*;
-import com.tokenhub.model.*;
-import com.tokenhub.routing.*;
+import com.tokenhub.entity.ApiKey;
+import com.tokenhub.entity.ModelRequest;
+import com.tokenhub.mapper.ModelRequestMapper;
+import com.tokenhub.mapper.UserMapper;
+import com.tokenhub.model.AnthropicProvider;
+import com.tokenhub.model.ModelProvider;
+import com.tokenhub.model.ModelProviderException;
+import com.tokenhub.routing.CircuitBreaker;
+import com.tokenhub.routing.ProviderEntry;
+import com.tokenhub.routing.ProviderRouter;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import java.util.*;
-@Service public class ChatCompletionService {
- private final ApiKeyService keys; private final ApiKeyRateLimiter limiter; private final ModelRequestMapper requests; private final TokenReservationService reservations; private final TokenWalletMapper wallets; private final TokenLedgerMapper ledgers; private final UserMapper users; private final ProviderRouter router; private final BillingProperties billing; private final ModelProperties model; private final ObjectMapper json;
- public ChatCompletionService(ApiKeyService keys,ApiKeyRateLimiter limiter,ModelRequestMapper requests,TokenReservationService reservations,TokenWalletMapper wallets,TokenLedgerMapper ledgers,UserMapper users,ProviderRouter router,BillingProperties billing,ModelProperties model,ObjectMapper json){this.keys=keys;this.limiter=limiter;this.requests=requests;this.reservations=reservations;this.wallets=wallets;this.ledgers=ledgers;this.users=users;this.router=router;this.billing=billing;this.model=model;this.json=json;}
- public Map<String,Object> complete(String authorization,String idempotencyKey,ChatCompletionRequest input){
-  ApiKey key=keys.authenticate(bearer(authorization)); if(users.findById(key.getUserId())==null||users.findById(key.getUserId()).getStatus()!=1)throw new BusinessException("ACCOUNT_SUSPENDED","account is suspended",HttpStatus.FORBIDDEN); limiter.check(key.getId()); validate(input,key,idempotencyKey);
-  ModelRequest prior=requests.findByRequestId(idempotencyKey); if(prior!=null)return prior(prior);
-  long reserved=estimate(input); ModelRequest request=new ModelRequest();request.setRequestId(idempotencyKey);request.setUserId(key.getUserId());request.setApiKeyId(key.getId());request.setModelCode(input.model());request.setReservedTokens(reserved);request.setStatus(ModelRequestStatus.PROCESSING);
-  try{requests.insert(request);}catch(DuplicateKeyException e){return prior(require(idempotencyKey));}
-  try{reservations.freeze(key.getUserId(),input.model(),idempotencyKey,reserved);}catch(RuntimeException e){finish(request,ModelRequestStatus.FAILED,null,null,null,0,ProviderCostStatus.UNKNOWN);throw e;}
-  try { ModelProvider.ProviderResponse response=callWithFailover(input,request); if(response.totalTokens()==null){reservations.release(key.getUserId(),input.model(),idempotencyKey);finish(request,ModelRequestStatus.BILLING_UNKNOWN,null,null,null,request.getRetryCount(),ProviderCostStatus.UNKNOWN);throw new BusinessException("BILLING_UNKNOWN","provider returned no usage",HttpStatus.BAD_GATEWAY);}
-   settle(request,response); return response.body();
-  } catch(BusinessException e){if(!"BILLING_UNKNOWN".equals(e.code())) fail(request);throw e;} catch(ModelProviderException e){fail(request);throw new BusinessException("MODEL_TEMPORARILY_UNAVAILABLE","model provider unavailable",HttpStatus.SERVICE_UNAVAILABLE);} catch(RuntimeException e){fail(request);throw e;}
- }
- private ModelProvider.ProviderResponse callWithFailover(ChatCompletionRequest input,ModelRequest request){List<ProviderEntry> candidates=router.routeOrder();ModelProviderException last=null;for(ProviderEntry entry:candidates){if(!entry.breaker().allow())continue;try{long start=System.nanoTime();ModelProvider.ProviderResponse response=callProviderWithRetry(entry.provider(),input,request);entry.recordLatencyMillis((System.nanoTime()-start)/1_000_000L);entry.breaker().recordSuccess();request.setProviderCode(entry.code());return response;}catch(ModelProviderException e){last=e;entry.breaker().recordFailure();}}throw last!=null?last:new ModelProviderException("all providers unavailable",false,null);}
- private ModelProvider.ProviderResponse callProviderWithRetry(ModelProvider provider,ChatCompletionRequest input,ModelRequest request){ModelProviderException last=null;for(int attempt=1;attempt<=model.getMaxAttempts();attempt++){try{request.setRetryCount(attempt-1);return provider.complete(input);}catch(ModelProviderException e){last=e;if(!e.retryable()||attempt==model.getMaxAttempts())throw e;try{Thread.sleep(attempt==1?200:500);}catch(InterruptedException x){Thread.currentThread().interrupt();throw e;}}}throw last;}
- @Transactional void settle(ModelRequest request,ModelProvider.ProviderResponse response){TokenWallet wallet=reservations.lock(request.getUserId(),request.getModelCode());long used=response.totalTokens();long before=wallet.getAvailableToken()+request.getReservedTokens();long available=before-used;long frozen=wallet.getFrozenToken()-request.getReservedTokens();wallets.setBalances(wallet.getId(),available,frozen);TokenLedger ledger=new TokenLedger();ledger.setUserId(request.getUserId());ledger.setModelCode(request.getModelCode());ledger.setBizId("MODEL_CONSUME_"+request.getRequestId());ledger.setType(LedgerType.CONSUME);ledger.setAmount(-used);ledger.setBalanceBefore(before);ledger.setBalanceAfter(available);ledger.setRemark("model request");ledgers.insertIgnore(ledger);if(available < -billing.getCreditLimit())users.suspend(request.getUserId());String result;try{result=json.writeValueAsString(response.body());}catch(Exception e){throw new IllegalStateException(e);}finish(request,ModelRequestStatus.SUCCESS,response.promptTokens(),response.completionTokens(),used,request.getRetryCount(),ProviderCostStatus.KNOWN,result);reservations.settleRedis(request.getUserId(),request.getModelCode(),request.getRequestId(),used);}
- private void fail(ModelRequest r){try{reservations.release(r.getUserId(),r.getModelCode(),r.getRequestId());}finally{finish(r,ModelRequestStatus.FAILED,null,null,null,r.getRetryCount(),ProviderCostStatus.UNKNOWN);}}
- private void finish(ModelRequest r,ModelRequestStatus status,Long in,Long out,Long total,int retries,ProviderCostStatus cost){finish(r,status,in,out,total,retries,cost,null);}
- private void finish(ModelRequest r,ModelRequestStatus status,Long in,Long out,Long total,int retries,ProviderCostStatus cost,String result){r.setStatus(status);r.setInputTokens(in);r.setOutputTokens(out);r.setTotalTokens(total);r.setRetryCount(retries);r.setProviderCostStatus(cost);r.setResultReference(result);requests.finish(r);}
- private Map<String,Object> prior(ModelRequest r){if(r.getStatus()==ModelRequestStatus.SUCCESS){try{return json.readValue(r.getResultReference(),new TypeReference<>(){});}catch(Exception e){throw new IllegalStateException("stored completion unavailable",e);}}if(r.getStatus()==ModelRequestStatus.PROCESSING)throw new BusinessException("REQUEST_PROCESSING","request is processing",HttpStatus.CONFLICT);if(r.getStatus()==ModelRequestStatus.BILLING_UNKNOWN)throw new BusinessException("BILLING_UNKNOWN","previous request has unknown billing",HttpStatus.BAD_GATEWAY);throw new BusinessException("IDEMPOTENCY_KEY_REUSE","failed request requires a new Idempotency-Key",HttpStatus.CONFLICT);}
- private ModelRequest require(String id){ModelRequest r=requests.findByRequestId(id);if(r==null)throw new IllegalStateException("request disappeared");return r;}
- private void validate(ChatCompletionRequest r,ApiKey key,String id){if(id==null||id.isBlank()||id.length()>64)throw new BusinessException("INVALID_REQUEST","Idempotency-Key is required",HttpStatus.BAD_REQUEST);if(Boolean.TRUE.equals(r.stream()))throw new BusinessException("INVALID_REQUEST","streaming is not supported",HttpStatus.BAD_REQUEST);if(r.maxTokens()!=null&&(r.maxTokens()<1||r.maxTokens()>model.getMaxOutputTokens()))throw new BusinessException("INVALID_REQUEST","invalid max_tokens",HttpStatus.BAD_REQUEST);if(!Arrays.asList(key.getAllowedModels().split(",")).contains(r.model()))throw new BusinessException("MODEL_NOT_ALLOWED","model is not allowed for this api key",HttpStatus.FORBIDDEN);int chars=r.messages().stream().mapToInt(m->String.valueOf(m.getOrDefault("content","")).length()).sum();if(chars>model.getMaxInputCharacters())throw new BusinessException("INVALID_REQUEST","input is too large",HttpStatus.BAD_REQUEST);}
- private long estimate(ChatCompletionRequest r){long chars=r.messages().stream().mapToLong(m->String.valueOf(m.getOrDefault("content","")).length()).sum();return Math.max(1,(chars+3)/4)+(r.maxTokens()==null?model.getMaxOutputTokens():r.maxTokens())+billing.getSafetyMargin();}
- private static String bearer(String h){if(h==null||!h.startsWith("Bearer "))throw new BusinessException("INVALID_API_KEY","invalid api key",HttpStatus.UNAUTHORIZED);return h.substring(7).trim();}
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Objects;
+@Service
+public class ChatCompletionService {
+    private final ApiKeyService keys;
+    private final ApiKeyRateLimiter limiter;
+    private final ModelRequestMapper requests;
+    private final TokenReservationService reservations;
+    private final UserMapper users;
+    private final ProviderRouter router;
+    private final BillingProperties billing;
+    private final ModelProperties model;
+    private final ObjectMapper json;
+
+    public ChatCompletionService(ApiKeyService keys, ApiKeyRateLimiter limiter, ModelRequestMapper requests,
+                                 TokenReservationService reservations, UserMapper users, ProviderRouter router,
+                                 BillingProperties billing, ModelProperties model, ObjectMapper json) {
+        this.keys = keys;
+        this.limiter = limiter;
+        this.requests = requests;
+        this.reservations = reservations;
+        this.users = users;
+        this.router = router;
+        this.billing = billing;
+        this.model = model;
+        this.json = json;
+    }
+
+    public Map<String, Object> complete(String authorization, String idempotencyKey, ChatCompletionRequest input) {
+        ApiKey key = keys.authenticate(bearer(authorization));
+        var user = users.findById(key.getUserId());
+        if (user == null || user.getStatus() != 1) {
+            throw new BusinessException("ACCOUNT_SUSPENDED", "account is suspended", HttpStatus.FORBIDDEN);
+        }
+        limiter.check(key.getId());
+        validate(input, key, idempotencyKey);
+
+        long reserved = estimate(input);
+        ModelRequest prior = requests.findByRequestId(idempotencyKey);
+        if (prior != null) return prior(prior, key);
+
+        ModelRequest request = new ModelRequest();
+        request.setRequestId(idempotencyKey);
+        request.setUserId(key.getUserId());
+        request.setApiKeyId(key.getId());
+        request.setModelCode(input.model());
+        request.setReservedTokens(reserved);
+        request.setStatus(ModelRequestStatus.PROCESSING);
+        request.setRetryCount(0);
+        try {
+            reservations.freeze(request);
+        } catch (DuplicateKeyException e) {
+            ModelRequest existing = requests.findByRequestId(idempotencyKey);
+            if (existing == null) throw e;
+            return prior(existing, key);
+        }
+        ModelProvider.ProviderResponse response;
+        try {
+            response = callWithFailover(input, request);
+        } catch (ModelProviderException e) {
+            if (e.outcomeUnknown()) {
+                finish(request, ModelRequestStatus.BILLING_UNKNOWN, null, null);
+                throw billingUnknown();
+            }
+            finish(request, ModelRequestStatus.FAILED, null, null);
+            if (e.clientInputInvalid()) {
+                throw new BusinessException("INVALID_REQUEST", e.getMessage(), HttpStatus.BAD_REQUEST);
+            }
+            throw new BusinessException("MODEL_TEMPORARILY_UNAVAILABLE", "model provider unavailable",
+                    HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        if (response.totalTokens() == null || response.totalTokens() < 0) {
+            finish(request, ModelRequestStatus.BILLING_UNKNOWN, response, null);
+            throw billingUnknown();
+        }
+        String result;
+        try {
+            result = json.writeValueAsString(response.body());
+        } catch (JsonProcessingException e) {
+            finish(request, ModelRequestStatus.BILLING_UNKNOWN, response, null);
+            throw billingUnknown();
+        }
+        if (!finish(request, ModelRequestStatus.SUCCESS, response, result)) throw billingUnknown();
+        return response.body();
+    }
+
+    private ModelProvider.ProviderResponse callWithFailover(ChatCompletionRequest input, ModelRequest request) {
+        ModelProviderException last = null;
+        for (ProviderEntry entry : router.routeOrder(input.model())) {
+            CircuitBreaker.Permit permit = entry.breaker().acquire();
+            if (permit == null) continue;
+            var outcome = CircuitBreaker.Outcome.NEUTRAL;
+            try {
+                ChatCompletionRequest upstream = input.withModelAndMaxTokens(entry.upstreamModel(input.model()),
+                        input.maxTokens() == null && entry.provider() instanceof AnthropicProvider
+                                ? Math.min(1024, model.getMaxOutputTokens()) : input.maxTokens());
+                long start = System.nanoTime();
+                var response = callProviderWithRetry(entry, upstream, request, permit.probe());
+                entry.recordLatencyMillis((System.nanoTime() - start) / 1_000_000L);
+                outcome = CircuitBreaker.Outcome.SUCCESS;
+                return response;
+            } catch (ModelProviderException e) {
+                last = e;
+                if (e.countsAgainstBreaker()) outcome = CircuitBreaker.Outcome.FAILURE;
+                if (!e.allowsFailover() || Thread.currentThread().isInterrupted()) throw e;
+            } finally {
+                permit.complete(outcome);
+            }
+        }
+        if (last != null) throw last;
+        throw new ModelProviderException("all providers unavailable", false, null);
+    }
+
+    private ModelProvider.ProviderResponse callProviderWithRetry(ProviderEntry entry, ChatCompletionRequest input,
+                                                                 ModelRequest request, boolean probe) {
+        int maxAttempts = probe ? 1 : Math.max(1, model.getMaxAttempts());
+        for (int attempt = 1; ; attempt++) {
+            if (request.getProviderCode() != null) request.setRetryCount(request.getRetryCount() + 1);
+            request.setProviderCode(entry.code());
+            if (requests.recordAttempt(request) == 0) throw billingUnknown();
+            try {
+                return entry.provider().complete(input);
+            } catch (ModelProviderException e) {
+                if (!e.retryable() || attempt >= maxAttempts) throw e;
+                try {
+                    Thread.sleep(attempt == 1 ? 200 : 500);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+    }
+
+    private boolean finish(ModelRequest request, ModelRequestStatus status,
+                           ModelProvider.ProviderResponse response, String result) {
+        request.setStatus(status);
+        request.setInputTokens(response == null ? null : response.promptTokens());
+        request.setOutputTokens(response == null ? null : response.completionTokens());
+        request.setTotalTokens(response == null || response.totalTokens() == null || response.totalTokens() < 0
+                ? null : response.totalTokens());
+        request.setProviderCostStatus(status == ModelRequestStatus.SUCCESS
+                ? ProviderCostStatus.KNOWN : ProviderCostStatus.UNKNOWN);
+        request.setResultReference(result);
+        return reservations.finish(request);
+    }
+
+    private static BusinessException billingUnknown() {
+        return new BusinessException("BILLING_UNKNOWN", "request has unknown billing", HttpStatus.BAD_GATEWAY);
+    }
+    private Map<String, Object> prior(ModelRequest request, ApiKey key) {
+        if (!Objects.equals(request.getApiKeyId(), key.getId())) {
+            throw new BusinessException("IDEMPOTENCY_KEY_REUSE", "Idempotency-Key is already in use", HttpStatus.CONFLICT);
+        }
+        return switch (request.getStatus()) {
+            case SUCCESS -> readStoredResult(request);
+            case PROCESSING -> throw new BusinessException("REQUEST_PROCESSING", "request is processing", HttpStatus.CONFLICT);
+            case BILLING_UNKNOWN -> throw billingUnknown();
+            case FAILED -> throw new BusinessException("IDEMPOTENCY_KEY_REUSE",
+                    "failed request requires a new Idempotency-Key", HttpStatus.CONFLICT);
+        };
+    }
+
+    private Map<String, Object> readStoredResult(ModelRequest request) {
+        try {
+            return json.readValue(request.getResultReference(), new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("stored completion unavailable", e);
+        }
+    }
+
+    private void validate(ChatCompletionRequest request, ApiKey key, String id) {
+        if (id == null || id.isBlank() || id.length() > 64) {
+            throw new BusinessException("INVALID_REQUEST", "Idempotency-Key is required", HttpStatus.BAD_REQUEST);
+        }
+        if (Boolean.TRUE.equals(request.stream())) {
+            throw new BusinessException("INVALID_REQUEST", "streaming is not supported", HttpStatus.BAD_REQUEST);
+        }
+        Integer maxTokens = request.maxTokens();
+        if (maxTokens != null && (maxTokens < 1 || maxTokens > model.getMaxOutputTokens())) {
+            throw new BusinessException("INVALID_REQUEST", "invalid max_tokens", HttpStatus.BAD_REQUEST);
+        }
+        if (!Arrays.asList(key.getAllowedModels().split(",")).contains(request.model())) {
+            throw new BusinessException("MODEL_NOT_ALLOWED", "model is not allowed for this api key", HttpStatus.FORBIDDEN);
+        }
+        if (request.messages().stream().anyMatch(Objects::isNull)
+                || request.tools() != null && request.tools().stream().anyMatch(Objects::isNull)) {
+            throw new BusinessException("INVALID_REQUEST", "messages and tools must contain objects", HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    private long estimate(ChatCompletionRequest request) {
+        long chars = request.messages().stream().mapToLong(message ->
+                String.valueOf(message.getOrDefault("content", "")).length()
+                        + (long) Objects.toString(message.get("tool_calls"), "").length()).sum();
+        if (request.tools() != null) chars += request.tools().toString().length();
+        if (chars > model.getMaxInputCharacters()) {
+            throw new BusinessException("INVALID_REQUEST", "input is too large", HttpStatus.BAD_REQUEST);
+        }
+        int output = request.maxTokens() == null ? model.getMaxOutputTokens() : request.maxTokens();
+        return Math.max(1, (chars + 3) / 4) + output + billing.getSafetyMargin();
+    }
+
+    private static String bearer(String header) {
+        if (header == null || !header.startsWith("Bearer ")) {
+            throw new BusinessException("INVALID_API_KEY", "invalid api key", HttpStatus.UNAUTHORIZED);
+        }
+        return header.substring(7).trim();
+    }
 }
