@@ -11,7 +11,6 @@ import com.tokenhub.entity.TokenWallet;
 import com.tokenhub.mapper.ModelRequestMapper;
 import com.tokenhub.mapper.TokenLedgerMapper;
 import com.tokenhub.mapper.TokenWalletMapper;
-import com.tokenhub.mapper.UserMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,15 +20,13 @@ public class TokenReservationService {
     private final ModelRequestMapper requests;
     private final TokenWalletMapper wallets;
     private final TokenLedgerMapper ledgers;
-    private final UserMapper users;
     private final BillingProperties billing;
 
     public TokenReservationService(ModelRequestMapper requests, TokenWalletMapper wallets,
-                                   TokenLedgerMapper ledgers, UserMapper users, BillingProperties billing) {
+                                   TokenLedgerMapper ledgers, BillingProperties billing) {
         this.requests = requests;
         this.wallets = wallets;
         this.ledgers = ledgers;
-        this.users = users;
         this.billing = billing;
     }
 
@@ -67,7 +64,6 @@ public class TokenReservationService {
         wallets.setBalances(wallet.getId(), available, frozen);
         if (success) {
             writeLedger(request, before, available);
-            if (available < -billing.getCreditLimit()) users.suspend(request.getUserId());
         }
         return true;
     }

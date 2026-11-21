@@ -20,9 +20,9 @@
 - 买套餐 = 充值额度 → 进 Wallet（按 modelCode 分账）
 - 创建 API key = 拿调用凭证 → 带 `allowedModels`
 
-**逻辑模型 ≠ 物理厂商**：用户请求里的 `model` 是逻辑模型名（modelCode），平台用 `ProviderRouter` 选真实上游（`provider_code`）执行，切换对用户无感知。
+**逻辑模型与上游入口**：用户请求里的 `model` 是模型名（modelCode），平台用 `ProviderRouter` 选择已配置的兼容上游（`provider_code`）。调用过程通常无需用户手动切换，响应可能包含上游模型名。
 
-**计费闭环**：买额度入账 → 调用前冻结 → 按真实 usage 结算 → 失败释放。冻结/结算绑模型，切换厂商不影响账务；成本差异记 `provider_code + unitCost`，是平台成本侧，不是用户计费。
+**计费闭环**：买额度入账 → 调用前冻结 → 按真实 usage 结算 → 失败或用量未知时释放。冻结和结算绑定用户请求的模型；`provider_code` 记录实际供应商，配置的 `unitCost` 用于路由评分，尚未实现实际成本金额核算。
 
 ---
 
@@ -81,8 +81,8 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 | `ProviderRouter` | 路由：先筛模型能力，再按成本 + 延迟 + 熔断状态给候选排序 | 排除不支持模型或 OPEN 的候选，返回最优到次优 |
 | `CircuitBreaker` | 熔断器：连续失败到阈值就熔断、冷却后放探活 | 每 Provider 一个，独立记成功/失败 |
 | `CLOSED/OPEN/HALF_OPEN` | 熔断三态：正常 / 熔断 / 半开探活 | HALF_OPEN 只放一个请求，成功回 CLOSED、失败回 OPEN |
-| `failover`（故障切换） | 当前 Provider 失败/熔断时按序切到下一个 | 只发生在 Provider 层，用户无感知 |
-| `unitCost` | 每个 Provider 的"每 token 成本"（平台成本侧） | 用于路由打分和成本分析，不直接用于用户计费 |
+| `failover`（故障切换） | 允许切换的错误发生时，按序尝试下一个兼容 Provider | 读取超时等结果未知的情况停止切换 |
+| `unitCost` | 配置的 Provider 单位成本 | 用于路由打分，不直接用于用户计费 |
 | 延迟 EMA | 成功调用耗时的指数滑动平均 | 路由的"延迟"维度，低者优先 |
 | `type`（provider 类型） | 配置里标记厂商协议：`openai` / `anthropic` | 工厂据此选 adapter；DeepSeek 用 `openai` |
 | `provider_code` | 记录本次调用最终服务的 Provider | 落在 `model_request`，支撑成本分析 |
@@ -165,7 +165,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 - **一句话**：买额度是"支付 → MQ 发额度"，花额度是"冻结 → 按真实 usage 结算 → 失败释放"。
 - **三张表**：Wallet（余额快照）、Ledger（变更流水）、model_request（一次调用记录）。
 - **两个幂等**：购买用订单号（`TOKEN_GRANT_ORDER_订单号`），调用用请求号（`Idempotency-Key`）。
-- **必背数字**：估算输入 = 字符数 ÷ 4；信用额度 `credit_limit` 固定 5000；重试 3 次退避 200ms/500ms。
+- **必背数字**：中文约 1.8 字 / Token、英文约 0.75 词 / Token，标点等按字符粗估；默认授信 0；明确连接失败最多尝试 3 次，退避 200ms/500ms。
 
 ## 一、背景（问题在哪）
 
@@ -181,7 +181,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 模拟支付在同一个事务里把订单改成 PAID、写 `TOKEN_GRANT` Outbox。发放消费者 `SELECT FOR UPDATE` 锁住对应钱包，用订单号拼出唯一流水标识（`TOKEN_GRANT_ORDER_订单号`），只有 `insertIgnore` 返回 1（第一次插入成功）才给余额加额度，再推进订单状态。两步在**同一事务**，不会出现"流水提交了、余额没加"的部分成功。
 
 **第二步：调用前 = 幂等登记 + 预冻结（同一 MySQL 事务）。**
-先用请求头 `Idempotency-Key`（幂等键，回答"这是哪一次请求"）登记：同一个键如果已有成功结果，直接返回存的结果，不再调上游。新请求按"估算输入（字符数 ÷ 4）+ maxOutputTokens + 安全余量"算出预冻结量，在**同一个 MySQL 事务**里完成"插入调用记录占位 + 锁钱包 + 冻结额度"，再调上游。
+先用请求头 `Idempotency-Key`（幂等键，回答"这是哪一次请求"）登记：同一个键如果已有成功结果，直接返回存的结果，不再调上游。新请求按"估算输入 + maxOutputTokens + 安全余量"算出预冻结量。输入文本按中文、英文和其他字符分别粗估，在**同一个 MySQL 事务**里完成"插入调用记录占位 + 锁钱包 + 冻结额度"，再调上游。
 
 **第三步：调用后 = 按真实用量结算或释放。**
 上游成功返回 `usage` 后，在**同一个事务**里推进请求状态、更新钱包余额、写消费流水——三者一起提交或回滚，不存在"余额改了流水没记"的部分成功；最终失败就释放全部冻结。上游返回成功但缺 `usage` 时，调用记录标 `BILLING_UNKNOWN`、释放冻结，保留"这次计费未知"的状态，**不拿估算值收费**。
@@ -216,7 +216,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
    原可用 10000、冻结 0；预冻结 2000 后可用 8000、冻结 2000。实际用 1500，结算后可用 8500、冻结 0，写消费 -1500。彻底失败就恢复可用 10000。
 
 6. **实际 usage 超过冻结量怎么办？**
-   设计允许固定 5000 Token 信用额度（`credit_limit`）；预冻结若会让可用余额低于 -5000 就直接拒绝。真实 usage 返回后仍按实际量结算，若补扣突破信用下限，记真实消费并暂停账户。
+   默认授信为 0，预冻结所需额度超过可用余额时拒绝新请求。已发出的请求按真实 usage 结算，若超出冻结量导致余额为负，负余额留在该模型钱包；购买同模型套餐到账后先抵扣负余额，足够覆盖下一次冻结时可继续调用。其他模型钱包不受影响。
 
 7. **客户端超时，但服务器其实已经结算成功怎么办？**
    客户端重试复用原 `Idempotency-Key`，查到 SUCCESS 就返回原结果，**不再调用也不再扣费**。计费成功不以客户端有没有收到 HTTP 响应为准。
@@ -371,7 +371,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 - **一句话**：把"单 Provider 直连"升级成"统一契约 + 多厂商 adapter + 成本/延迟/熔断路由 + 故障自动切换"。
 - **三个锚点**：① adapter 统一契约（屏蔽协议差异）② Router 按成本+延迟+熔断打分排序 ③ CircuitBreaker 三态 + failover。
 - **必背名词**：`ModelProvider`（统一接口）、`ProviderRouter`（路由）、`CircuitBreaker`（熔断）、`CLOSED/OPEN/HALF_OPEN`、`usage` 归一、`provider_code`。
-- **一句话守边界**：切换只发生在 Provider 层、用户无感知；冻结和结算还绑在请求的模型上。
+- **一句话守边界**：切换发生在 Provider 层；冻结和结算绑在请求的模型上，响应可能暴露上游模型名。
 
 ## 一、背景
 
@@ -379,7 +379,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 
 ## 二、做了什么
 
-> 我用**适配器模式**：统一契约就是 `ModelProvider` 接口 + OpenAI 形状的请求/响应，每个厂商一个 adapter 做双向翻译；再在它前面加一层 `ProviderRouter`（成本 + 延迟 + 熔断打分排序）和每 Provider 一个 `CircuitBreaker`（三态熔断），调用时按序尝试、失败就 failover 到下一个。
+> 我用**适配器模式**：统一契约就是 `ModelProvider` 接口 + OpenAI 形状的请求/响应，由 adapter 做双向翻译；再在它前面加一层 `ProviderRouter`，筛选模型和熔断状态后按成本、延迟排序，每个 Provider 有独立的三态熔断器。遇到允许切换的错误，才尝试下一个兼容入口。
 
 ## 三、怎么分步做的（四步）
 
@@ -397,7 +397,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 
 ## 四、成果
 
-> 平台能同时接多个上游（OpenAI/DeepSeek/Claude），下游计费和客户端**永远只看到 OpenAI 兼容的协议**；单个 Provider 挂了会自动切到下一个、不中断；`provider_code` 落库后能算"哪个上游服务了多少、成本多少"，正好对应 JD 的数据洞察。计费口径不变——切换只发生在 Provider 层，用户无感知。
+> 平台具备配置多个上游的能力。存在兼容备用入口且错误允许切换时，可以按候选顺序尝试；超时和结果不明的 5xx 停止切换，记为 `BILLING_UNKNOWN`。当前默认只配置一个本地 mock，客户端可能从上游响应的模型字段看出实际模型名。`provider_code` 和用量供后续成本核算，目前未自动计算成本金额。
 
 ## 五、困难
 
@@ -428,7 +428,7 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
    先按 Provider 的 `models` 映射筛掉不支持该模型的候选，再按「成本单价 + 延迟 EMA」两个维度加权排序，低者优先；权重是配置项，当前演示等权，生产要按业务校准。可用性由熔断状态直接排除，不参与打分。
 
 7. **切换发生时，冻结和计费会乱吗？**
-   不会。冻结/结算绑的是用户请求的模型（同一个模型），切换只换"哪个上游服务它"，所以账务不动；成本差异（哪个上游更贵）记在 `provider_code` + `unitCost`，是平台成本侧，不是用户计费。
+   冻结和结算绑定用户请求的模型，成功后按最终响应的真实 usage 扣该模型钱包。请求记录保存实际 `provider_code`，`unitCost` 用于路由评分；平台尚未实现按供应商计算实际成本金额。
 
 8. **哪些错误会重试、切换、熔断？**
    明确的连接失败在同 Provider 内有限重试；限流/过载（429/529）不重试、直接记熔断并切换；读取超时和结果不明的 5xx（含 503）停止重试和切换、释放冻结并记 `BILLING_UNKNOWN`；普通 4xx 请求拒绝不重试、不切换、不计入熔断。重试管"瞬时抖动"，熔断管"持续故障"。
@@ -437,9 +437,9 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
    不是一把万能 key。用户可建多把 key，每把创建时指定 `allowedModels`（允许的模型白名单，逗号分隔）；同一用户的不同应用可以各建一把、白名单不同。key 只回答"你是谁、能用哪些模型"，不含额度。
 
 10. **调用时怎么选模型、按什么计费？**
-   模型是用户在请求 `body` 的 `model` 字段显式指定的；平台先校验它在 key 的 `allowedModels` 里（否则 403），再按「用户 + modelCode」这个维度冻结、结算。计费不看 key、不看厂商，只看请求里的 model。
+   创建 Key 时，所选模型必须已有该用户的套餐购买到账流水，余额为零仍可添加。调用时用户在 `body` 的 `model` 字段指定模型，平台校验 Key 权限，再按「用户 + modelCode」检查额度并冻结；成功后按上游实际总 Token 用量结算。
 
-11. **切换厂商时用户无感知，会不会造成效果损失？**
+11. **切换上游时，会不会造成效果损失？**
    切换的是厂商不是模型，用户请求的 model 名不变；靠 `models` 映射把逻辑模型翻译成每家厂商的物理模型（Anthropic 必须显式映射，OpenAI 兼容厂商透传模型名）。但客观上不同厂商对"等价模型"的质量有差异——failover 优先保可用，效果一致性是映射配置的责任；严格做法是只在语义等价组内 failover，这是后续优化点。
 
 ---

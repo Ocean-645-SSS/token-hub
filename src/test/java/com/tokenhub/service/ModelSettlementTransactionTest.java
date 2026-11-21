@@ -3,6 +3,7 @@ package com.tokenhub.service;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.tokenhub.common.ModelRequestStatus;
+import com.tokenhub.common.BusinessException;
 import com.tokenhub.common.ProviderCostStatus;
 import com.tokenhub.config.BillingProperties;
 import com.tokenhub.entity.ModelRequest;
@@ -45,8 +46,8 @@ class ModelSettlementTransactionTest {
             return factory.getObject();
         }
         @Bean TokenReservationService reservations(ModelRequestMapper requests, TokenWalletMapper wallets,
-                                                    TokenLedgerMapper ledgers, UserMapper users) {
-            return new TokenReservationService(requests, wallets, ledgers, users, new BillingProperties());
+                                                    TokenLedgerMapper ledgers) {
+            return new TokenReservationService(requests, wallets, ledgers, new BillingProperties());
         }
     }
 
@@ -103,6 +104,33 @@ class ModelSettlementTransactionTest {
         assertEquals(1, jdbc.queryForObject("select count(*) from token_ledger", Integer.class));
     }
 
+    @Test void zeroCreditRejectsInsufficientBalanceAndTopUpRestoresTheSameWallet() {
+        long walletId = wallets.findByUserAndModel(1, "model").getId();
+        assertEquals("CREDIT_LIMIT_EXCEEDED", assertThrows(BusinessException.class,
+                () -> reserve("initial", "model", 101L)).code());
+        assertNull(requests.findByRequestId("initial"));
+        assertWallet(100, 0);
+
+        ModelRequest inFlight = reserve("exact", "model", 100L);
+        assertWallet(0, 100);
+        inFlight.setStatus(ModelRequestStatus.SUCCESS);
+        inFlight.setTotalTokens(110L);
+        assertTrue(reservations.finish(inFlight));
+        assertWallet(-10, 0);
+        assertEquals(-110L, jdbc.queryForObject("select amount from token_ledger", Long.class));
+
+        assertEquals("CREDIT_LIMIT_EXCEEDED", assertThrows(BusinessException.class,
+                () -> reserve("next", "model", 30L)).code());
+        wallets.createIfAbsent(1, "other");
+        wallets.addAvailable(wallets.findByUserAndModel(1, "other").getId(), 30);
+        reserve("other-request", "other", 30L);
+        assertWallet(-10, 0);
+
+        wallets.addAvailable(walletId, 40);
+        reserve("next", "model", 30L);
+        assertWallet(0, 30);
+    }
+
     @Test void expiredDispatchedRequestPreservesProviderAndPreventsLateSettlement() {
         ModelRequest request = reserve("expired");
         request.setProviderCode("vendor");
@@ -121,12 +149,16 @@ class ModelSettlementTransactionTest {
     }
 
     private ModelRequest reserve(String id) {
+        return reserve(id, "model", 30L);
+    }
+
+    private ModelRequest reserve(String id, String model, long tokens) {
         ModelRequest request = new ModelRequest();
         request.setRequestId(id);
         request.setUserId(1L);
         request.setApiKeyId(1L);
-        request.setModelCode("model");
-        request.setReservedTokens(30L);
+        request.setModelCode(model);
+        request.setReservedTokens(tokens);
         request.setStatus(ModelRequestStatus.PROCESSING);
         reservations.freeze(request);
         return request;

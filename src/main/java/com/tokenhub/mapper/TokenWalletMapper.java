@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 
 public interface TokenWalletMapper {
-    @Insert("insert ignore into token_wallet(user_id,model_code,available_token,frozen_token,credit_limit,version) values(#{userId},#{modelCode},0,0,5000,0)")
+    @Insert("insert ignore into token_wallet(user_id,model_code,available_token,frozen_token,credit_limit,version) values(#{userId},#{modelCode},0,0,0,0)")
     int createIfAbsent(@Param("userId") long userId, @Param("modelCode") String modelCode);
     @Select("select id,user_id,model_code,available_token,frozen_token,credit_limit,version from token_wallet where user_id=#{userId} and model_code=#{modelCode} for update")
     TokenWallet lockByUserAndModel(@Param("userId") long userId, @Param("modelCode") String modelCode);

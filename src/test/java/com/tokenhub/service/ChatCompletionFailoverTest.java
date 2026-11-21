@@ -100,6 +100,20 @@ class ChatCompletionFailoverTest {
         assertEquals(CircuitBreaker.State.CLOSED, firstBreaker.state());
     }
 
+    @Test void freezesEstimatedChineseAndEnglishTextButSettlesActualUsage() {
+        var mixed = new ChatCompletionRequest("public", List.of(
+                Map.of("role", "system", "content", "中".repeat(1800)),
+                Map.of("role", "user", "content", List.of(Map.of("type", "text", "text", "one two three!")))),
+                10, false);
+        when(first.complete(any())).thenReturn(new ModelProvider.ProviderResponse(Map.of("answer", "ok"), 9L, 2L, 11L));
+
+        service.complete("Bearer key", "mixed", mixed);
+
+        // 1000 Chinese + 4 English + 1 punctuation + 10 output + 512 safety margin.
+        verify(reservations).freeze(argThat(request -> request.getReservedTokens() == 1527L));
+        assertEquals(11L, finishedRequest().getTotalTokens());
+    }
+
     private ModelRequest finishedRequest() {
         var capture = ArgumentCaptor.forClass(ModelRequest.class);
         verify(reservations).finish(capture.capture());

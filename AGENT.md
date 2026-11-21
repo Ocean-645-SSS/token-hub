@@ -363,3 +363,8 @@ JWT：登录成功签发 access token，先不做 refresh token
 - 明确的连接失败允许有限重试，HTTP 429 和 Anthropic 529 允许切换供应商。读取超时、无法确认结果的 5xx（含 503）和响应解析失败标记 `BILLING_UNKNOWN`，释放冻结额度，并保留供应商和请求记录供对账。普通请求拒绝不计入熔断。
 - 请求占位与冻结在同一个 MySQL 事务执行。结算在另一个 MySQL 事务内原子更新请求、钱包和消费流水。钱包与冻结以 MySQL 为准，Redis 中原有的 `wallet:*` 和 `token:reservation:*` 仅用于旧版在途请求核对。
 - 已有数据库升级时，暂停旧版模型调用并等待在途请求结束。若仍有旧版 `PROCESSING` 请求，结合旧 Redis 冻结记录与数据库钱包核对后，再执行 `src/main/resources/db/migrations/20261120-model-reservation-transaction.sql` 并启动新版。
+
+## 12. 2026-11-21 V1 模型钱包默认零授信
+
+- 默认授信改为 0，生效值由 `tokenhub.billing.credit-limit` 决定，钱包接口展示同一生效值。新请求的可用额度小于预计冻结额度时返回 `402 CREDIT_LIMIT_EXCEEDED`。
+- 已冻结的在途请求继续执行。实际用量超过冻结额时照实结算，负余额保留在对应模型的钱包里。购买同模型套餐时，到账额度先抵负余额，余额足以覆盖下一笔冻结后自然恢复。模型结算不再停用整个账户。

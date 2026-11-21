@@ -3,6 +3,7 @@ import com.tokenhub.common.BusinessException;
 import com.tokenhub.dto.*;
 import com.tokenhub.entity.ApiKey;
 import com.tokenhub.mapper.ApiKeyMapper;
+import com.tokenhub.mapper.TokenLedgerMapper;
 import com.tokenhub.security.CurrentUser;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
@@ -11,9 +12,17 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 @Service public class ApiKeyService {
- private final ApiKeyMapper keys; private final StringRedisTemplate redis;
- public ApiKeyService(ApiKeyMapper keys,StringRedisTemplate redis){this.keys=keys;this.redis=redis;}
- public ApiKeyResponse create(CreateApiKeyRequest request){ long userId=CurrentUser.get(); String secret=random(); ApiKey key=new ApiKey(); key.setUserId(userId); key.setName(request.name().trim()); key.setKeyPrefix(secret.substring(0,12)); key.setKeyHash(hash(secret)); key.setAllowedModels(String.join(",",new LinkedHashSet<>(request.allowedModels()))); keys.insert(key); return response(key,secret); }
+ private final ApiKeyMapper keys; private final StringRedisTemplate redis; private final TokenLedgerMapper ledgers;
+ public ApiKeyService(ApiKeyMapper keys,StringRedisTemplate redis,TokenLedgerMapper ledgers){this.keys=keys;this.redis=redis;this.ledgers=ledgers;}
+ public ApiKeyResponse create(CreateApiKeyRequest request){
+  long userId=CurrentUser.get();
+  Set<String> models=new LinkedHashSet<>(request.allowedModels());
+  for(String model:models){
+   if(model.contains(",")||ledgers.countPurchases(userId,model)==0)
+    throw new BusinessException("MODEL_NOT_PURCHASED","model package has not been purchased and credited",HttpStatus.BAD_REQUEST);
+  }
+  String secret=random(); ApiKey key=new ApiKey(); key.setUserId(userId); key.setName(request.name().trim()); key.setKeyPrefix(secret.substring(0,12)); key.setKeyHash(hash(secret)); key.setAllowedModels(String.join(",",models)); keys.insert(key); return response(key,secret);
+ }
  public List<ApiKeyResponse> list(){return keys.listByUser(CurrentUser.get()).stream().map(k->response(k,null)).toList();}
  public void revoke(long id){long userId=CurrentUser.get();ApiKey existing=keys.findByIdForUser(id,userId);if(existing==null||keys.revoke(id,userId)!=1) throw new BusinessException("API_KEY_NOT_FOUND","api key not found",HttpStatus.NOT_FOUND); redis.delete("apikey:"+existing.getKeyHash()); }
  public ApiKey authenticate(String raw){if(raw==null||raw.isBlank()) throw invalid(); String digest=hash(raw); String cached=redis.opsForValue().get("apikey:"+digest); ApiKey key=cached==null?keys.findByHash(digest):fromCache(cached); if(key==null||key.getStatus()!=1) throw invalid(); if(cached==null)redis.opsForValue().set("apikey:"+digest,cache(key)); keys.touch(key.getId()); return key;}

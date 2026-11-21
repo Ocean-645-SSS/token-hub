@@ -39,7 +39,7 @@ tokenhub:
     retry-backoff-ms: ${TOKENHUB_PACKAGE_INDEX_RETRY_BACKOFF_MS:200}
     reconciliation-interval-ms: ${TOKENHUB_PACKAGE_INDEX_RECONCILIATION_INTERVAL_MS:60000}
   billing:
-    credit-limit: ${TOKENHUB_BILLING_CREDIT_LIMIT:5000}
+    credit-limit: ${TOKENHUB_BILLING_CREDIT_LIMIT:0}
     safety-margin: ${TOKENHUB_BILLING_SAFETY_MARGIN:512}
     reservation-timeout-seconds: ${TOKENHUB_BILLING_RESERVATION_TIMEOUT_SECONDS:300}
   model:

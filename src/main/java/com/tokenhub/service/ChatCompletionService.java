@@ -22,10 +22,15 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 @Service
 public class ChatCompletionService {
+    private static final Pattern TEXT_PARTS = Pattern.compile(
+            "(?<word>[A-Za-z]+(?:['’][A-Za-z]+)*)|(?<han>\\p{IsHan})|[^\\p{IsWhite_Space}]");
+
     private final ApiKeyService keys;
     private final ApiKeyRateLimiter limiter;
     private final ModelRequestMapper requests;
@@ -223,7 +228,43 @@ public class ChatCompletionService {
             throw new BusinessException("INVALID_REQUEST", "input is too large", HttpStatus.BAD_REQUEST);
         }
         int output = request.maxTokens() == null ? model.getMaxOutputTokens() : request.maxTokens();
-        return Math.max(1, (chars + 3) / 4) + output + billing.getSafetyMargin();
+        double input = 0.0;
+        for (Map<String, Object> message : request.messages()) {
+            input += estimateContent(message.get("content"));
+            input += Objects.toString(message.get("tool_calls"), "").length() / 4.0;
+        }
+        if (request.tools() != null) input += request.tools().toString().length() / 4.0;
+        return Math.max(1, (long) Math.ceil(input)) + output + billing.getSafetyMargin();
+    }
+
+    private static double estimateContent(Object content) {
+        if (content instanceof String text) return estimateText(text);
+        if (content instanceof List<?> blocks) {
+            double tokens = 0.0;
+            for (Object block : blocks) {
+                if (block instanceof Map<?, ?> part && "text".equals(part.get("type"))
+                        && part.get("text") instanceof String text) {
+                    tokens += estimateText(text);
+                } else {
+                    tokens += String.valueOf(block).length() / 4.0;
+                }
+            }
+            return tokens;
+        }
+        return Objects.toString(content, "").length() / 4.0;
+    }
+
+    private static double estimateText(String text) {
+        var parts = TEXT_PARTS.matcher(text);
+        int han = 0;
+        int words = 0;
+        int other = 0;
+        while (parts.find()) {
+            if (parts.group("han") != null) han++;
+            else if (parts.group("word") != null) words++;
+            else other++;
+        }
+        return han / 1.8 + words / 0.75 + other;
     }
 
     private static String bearer(String header) {

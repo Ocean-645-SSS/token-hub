@@ -12,4 +12,6 @@ public interface TokenLedgerMapper {
     @Select("select id,user_id,model_code,biz_id,type,amount,balance_before,balance_after,remark,created_at from token_ledger where user_id=#{userId} order by id desc limit #{limit} offset #{offset}")
     List<TokenLedger> listByUser(@Param("userId") long userId, @Param("limit") int limit, @Param("offset") long offset);
     @Select("select count(*) from token_ledger where user_id=#{userId}") long countByUser(@Param("userId") long userId);
+    @Select("select count(*) from token_ledger where user_id=#{userId} and model_code=#{modelCode} and type in ('PURCHASE','SECKILL_PURCHASE') and amount > 0")
+    long countPurchases(@Param("userId") long userId, @Param("modelCode") String modelCode);
 }
