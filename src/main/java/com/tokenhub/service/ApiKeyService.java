@@ -24,6 +24,13 @@ import java.util.*;
   String secret=random(); ApiKey key=new ApiKey(); key.setUserId(userId); key.setName(request.name().trim()); key.setKeyPrefix(secret.substring(0,12)); key.setKeyHash(hash(secret)); key.setAllowedModels(String.join(",",models)); keys.insert(key); return response(key,secret);
  }
  public List<ApiKeyResponse> list(){return keys.listByUser(CurrentUser.get()).stream().map(k->response(k,null)).toList();}
+ public ApiKeyUsageResponse usage(long id) {
+  ApiKeyUsageResponse usage = keys.usageLastSevenDays(id, CurrentUser.get());
+  if (usage == null) {
+   throw new BusinessException("API_KEY_NOT_FOUND", "api key not found", HttpStatus.NOT_FOUND);
+  }
+  return usage;
+ }
  public void revoke(long id){long userId=CurrentUser.get();ApiKey existing=keys.findByIdForUser(id,userId);if(existing==null||keys.revoke(id,userId)!=1) throw new BusinessException("API_KEY_NOT_FOUND","api key not found",HttpStatus.NOT_FOUND); redis.delete("apikey:"+existing.getKeyHash()); }
  public ApiKey authenticate(String raw){if(raw==null||raw.isBlank()) throw invalid(); String digest=hash(raw); String cached=redis.opsForValue().get("apikey:"+digest); ApiKey key=cached==null?keys.findByHash(digest):fromCache(cached); if(key==null||key.getStatus()!=1) throw invalid(); if(cached==null)redis.opsForValue().set("apikey:"+digest,cache(key)); keys.touch(key.getId()); return key;}
  private ApiKeyResponse response(ApiKey k,String raw){return new ApiKeyResponse(k.getId(),k.getName(),k.getKeyPrefix(),Arrays.stream(k.getAllowedModels().split(",")).filter(s->!s.isBlank()).toList(),k.getStatus(),k.getCreatedAt(),k.getLastUsedAt(),raw);}

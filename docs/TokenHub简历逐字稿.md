@@ -433,8 +433,8 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 8. **哪些错误会重试、切换、熔断？**
    明确的连接失败在同 Provider 内有限重试；限流/过载（429/529）不重试、直接记熔断并切换；读取超时和结果不明的 5xx（含 503）停止重试和切换、释放冻结并记 `BILLING_UNKNOWN`；普通 4xx 请求拒绝不重试、不切换、不计入熔断。重试管"瞬时抖动"，熔断管"持续故障"。
 
-9. **用户的 API key 是统一的吗？怎么关联模型？**
-   不是一把万能 key。用户可建多把 key，每把创建时指定 `allowedModels`（允许的模型白名单，逗号分隔）；同一用户的不同应用可以各建一把、白名单不同。key 只回答"你是谁、能用哪些模型"，不含额度。
+9. **用户怎么管理 API Key？怎么关联模型？**
+   不同应用可以各建一把 Key，创建时自定义名称和 `allowedModels`。数据库的 `api_key` 表保存归属用户、名称、前缀、哈希、允许模型、状态和使用时间。明文只在创建时返回。Key 创建后立即可用，也可以撤销。额度按用户和模型记账，同一个用户的多个 Key 调同一个模型时共用钱包。
 
 10. **调用时怎么选模型、按什么计费？**
    创建 Key 时，所选模型必须已有该用户的套餐购买到账流水，余额为零仍可添加。调用时用户在 `body` 的 `model` 字段指定模型，平台校验 Key 权限，再按「用户 + modelCode」检查额度并冻结；成功后按上游实际总 Token 用量结算。
@@ -442,12 +442,20 @@ Java、Spring Boot、MyBatis-Plus、MySQL、Redis、Lua、RabbitMQ、Elasticsear
 11. **切换上游时，会不会造成效果损失？**
    切换的是厂商不是模型，用户请求的 model 名不变；靠 `models` 映射把逻辑模型翻译成每家厂商的物理模型（Anthropic 必须显式映射，OpenAI 兼容厂商透传模型名）。但客观上不同厂商对"等价模型"的质量有差异——failover 优先保可用，效果一致性是映射配置的责任；严格做法是只在语义等价组内 failover，这是后续优化点。
 
+12. **技术亮点｜为什么把按 Key 的固定窗口换成令牌桶？**
+   **问题背景和技术方案可以连起来讲。**
+   固定窗口快结束时打满一次，窗口重置后又能立刻打满一次，短时间就可能放行两批流量。现在按 API Key ID 在 Redis 里存一只桶，默认最多放 5 个令牌，每秒补 5 个。模型接口鉴权后，每次请求消耗 1 个令牌，桶空就返回 `429 RATE_LIMIT_EXCEEDED`。Lua 用 Redis 的时间计算补充量，把读余额、补充和扣减放在一次原子操作里，多个应用实例共用同一个桶。这里限制的是请求频率，模型用掉的 Token 仍由钱包结算。
+
+13. **用户怎么知道哪把 Key 用掉了多少 Token？**
+   每条 `model_request` 都关联 `api_key_id`。用户用登录 JWT 调 `GET /api/api-keys/{id}/usage`，只能查自己的 Key。调用次数按最近 7 天创建的请求记录计数，上游重试、切换及同幂等键重放都沿用同一条记录。Token 只汇总其中成功结算的用量，失败和计费未知的请求会计入调用次数。Key 撤销后仍能查这段历史。
+
 ---
 
 ## 待补充 / 待决定
 
 - **个人分工与时间线**：实际开发时间为 2026 年 9 月，简历时间不需要参考。逐字稿统一用「我负责」表述，未编造团队分工。
-- **多模型统一接入 / 路由 / 熔断**：已落地（`ModelProvider` 接口 + OpenAI/Claude adapter + `ProviderRegistry` + `ProviderRouter` + `CircuitBreaker` + failover + `provider_code`），见第五条。本地只有 mock 端点，Claude adapter 真调需换真实 key/baseUrl。**令牌桶限流仍未做**（当前是固定窗口 Redis Lua），可作后续优化点。
+- **多模型统一接入 / 路由 / 熔断**：已落地（`ModelProvider` 接口 + OpenAI/Claude adapter + `ProviderRegistry` + `ProviderRouter` + `CircuitBreaker` + failover + `provider_code`），见第五条。本地只有 mock 端点，Claude adapter 真调需换真实 key/baseUrl。
+- **Key 用量与限流证据自检**：用量查询已覆盖跨用户隔离、时间窗口、空记录和成功 Token 汇总。Redis 令牌桶已实现，真实 Redis 联调与压测待验证。
 - **性能数字**：沿用仓库历史压测报告（PUBLISHER/CONSUMER_OPTIMIZATION_REPORT），未重跑；口述时说明"对应改造前版本"。
 
 **建议新增的简历 bullet（可直接放进简历，命中 JD 任务 1/2/5）**：

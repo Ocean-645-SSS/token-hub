@@ -54,12 +54,13 @@ class ModelSettlementTransactionTest {
     @Autowired DataSource dataSource;
     @Autowired TokenReservationService reservations;
     @Autowired ModelRequestMapper requests;
+    @Autowired ApiKeyMapper apiKeys;
     @Autowired TokenWalletMapper wallets;
     private JdbcTemplate jdbc;
 
     @BeforeEach void prepare() {
         jdbc = new JdbcTemplate(dataSource);
-        jdbc.execute("drop table if exists model_request, token_wallet, token_ledger");
+        jdbc.execute("drop table if exists model_request, token_wallet, token_ledger, api_key");
         jdbc.execute("""
                 create table model_request (
                   id bigint auto_increment primary key, request_id varchar(64) unique, user_id bigint,
@@ -83,6 +84,24 @@ class ModelSettlementTransactionTest {
                 """);
         wallets.createIfAbsent(1, "model");
         wallets.addAvailable(wallets.findByUserAndModel(1, "model").getId(), 100);
+    }
+
+    @Test void usageIncludesOnlyOwnedKeyRequestsInWindowAndSumsOnlySuccessfulTokens() {
+        jdbc.execute("create table api_key (id bigint primary key, user_id bigint)");
+        jdbc.update("insert into api_key values (1, 7), (2, 7), (3, 9)");
+        jdbc.update("""
+                insert into model_request (api_key_id, user_id, status, total_tokens, created_at) values
+                (1, 7, 'SUCCESS', 20, current_timestamp),
+                (1, 7, 'BILLING_UNKNOWN', 100, current_timestamp),
+                (1, 7, 'SUCCESS', 200, timestampadd(DAY, -8, current_timestamp)),
+                (3, 9, 'SUCCESS', 300, current_timestamp)
+                """);
+
+        var usage = apiKeys.usageLastSevenDays(1, 7);
+        assertEquals(2L, usage.requestCount());
+        assertEquals(20L, usage.settledTokens());
+        assertEquals(0L, apiKeys.usageLastSevenDays(2, 7).requestCount());
+        assertNull(apiKeys.usageLastSevenDays(3, 7));
     }
 
     @Test void ledgerFailureRollsBackWalletAndStatusAndSuccessfulRetryChargesOnce() {
